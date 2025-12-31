@@ -1,0 +1,17 @@
+timm
+openslide-python
+openslide-bin
+tifffile
+numba
+hyperspy[all]
+pywavelets
+pandas
+pyarrow
+seaborn
+scikit-learn
+scikit-image
+opencv-python-headless
+imagecodecs
+jupyter
+ipywidgets
+jupytext

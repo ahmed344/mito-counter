@@ -1,3 +1,32 @@
+# Data
+data/
+qp-projects/
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.tif
+
+# Files
+*.pickle
+*.pkl
+*.pth
+*.key
+*.bin
+.gitattributes
+config.json
+
+# Checkpoints
+checkpoints/
+
+# notebooks
+*.ipynb
+
+# Directories
+.locks/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -200,6 +229,7 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+.cursor
 
 # Marimo
 marimo/_static/
