@@ -1,0 +1,68 @@
+# ==============================================================================
+# Pipeline Configuration for Mitochondria Segmentation
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Data Loading
+# ------------------------------------------------------------------------------
+data_loading:
+  # Path to the directory containing the dataset
+  data_dir: '/workspaces/mito-counter/data/Etude Calpaine 3/Condition - Calpaine 3'
+  
+  # Specific slide file path (relative to data_dir or absolute)
+  slide_path: '/workspaces/mito-counter/data/Etude Calpaine 3/Condition - Calpaine 3/SOL 1 - WT/SOL 1 - ME DATA/SOL1-1900X-0001.dm3'
+
+# ------------------------------------------------------------------------------
+# 2. Preprocessing
+# ------------------------------------------------------------------------------
+preprocessing:
+  # Shading Correction (Flat-field)
+  # Removes uneven illumination (vignetting) often found in EM images.
+  shading_correction:
+    enabled: true
+    method: "gaussian"      # Method: "gaussian" (fast) or "rolling_ball" (slower, more robust)
+    sigma: 100              # Sigma for Gaussian blur estimation of background (higher = smoother background)
+
+  # Denoising (Non-Local Means)
+  # Reduces grain/noise while preserving edges. Critical for "dark on dark" contrast.
+  denoising:
+    enabled: true
+    patch_size: 20          # Size of the patch used for comparison (pixels)
+    patch_distance: 20      # Search window radius (pixels)
+    h_factor: 5.0           # Filtering strength (higher = smoother but may blur details)
+    fast_mode: true         # Use fast approximation for NLM
+
+  # Normalization
+  # Rescales image intensity to [0, 1] range for the neural network.
+  normalization:
+    percentile_min: 1.0     # Lower percentile for clipping (robust min)
+    percentile_max: 99.0    # Upper percentile for clipping (robust max)
+
+# ------------------------------------------------------------------------------
+# 3. Model Inference (MitoNet)
+# ------------------------------------------------------------------------------
+inference:
+  # Model Configuration
+  model_path: "MitoNet_v1.pth"
+  model_url: "https://zenodo.org/record/6861565/files/MitoNet_v1.pth"
+  
+  # Hardware Acceleration
+  device: "cpu"             # "cuda" for GPU, "cpu" for CPU. (Use CPU if GPU memory < 8GB for 4k images)
+
+  # Detection Parameters
+  # These control the sensitivity vs. specificity trade-off.
+  confidence_thr: 0.1       # Minimum probability (0-1) to consider a pixel as mitochondria. Lower = Higher Recall (more detection).
+  nms_threshold: 0.5        # Non-Maximum Suppression threshold. Overlap allowed between instances before suppression.
+  nms_kernel: 5             # Window size for finding local maxima. Smaller = better for crowded/small mitos.
+  stuff_area: 10            # Minimum area (pixels) for a detected object to be kept. Removes speckle noise.
+
+# ------------------------------------------------------------------------------
+# 4. Visualization & Output
+# ------------------------------------------------------------------------------
+output:
+  save_path: "mitonet_result.png"
+  visualization:
+    cmap_img: "gray"        # Colormap for the original image
+    cmap_mask: "jet"        # Colormap for the segmentation overlay
+    alpha: 0.5              # Transparency of the overlay (0.0=invisible, 1.0=opaque)
+
