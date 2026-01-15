@@ -10,7 +10,7 @@ data_loading:
   data_dir: '/workspaces/mito-counter/data/Etude Calpaine 3/Condition - Calpaine 3'
   
   # Specific slide file path (relative to data_dir or absolute)
-  slide_path: '/workspaces/mito-counter/data/Etude Calpaine 3/Condition - Calpaine 3/SOL 1 - WT/SOL 1 - ME DATA/SOL1-1900X-0001.dm3'
+  slide_path: '/workspaces/mito-counter/data/Etude Calpaine 3/Condition - Calpaine 3/TA 1 - WT/TA 1 - ME DATA/TA1-4800X-0002.dm3'
 
 # ------------------------------------------------------------------------------
 # 2. Preprocessing
@@ -27,9 +27,9 @@ preprocessing:
   # Reduces grain/noise while preserving edges. Critical for "dark on dark" contrast.
   denoising:
     enabled: true
-    patch_size: 20          # Size of the patch used for comparison (pixels)
+    patch_size: 30          # Size of the patch used for comparison (pixels)
     patch_distance: 20      # Search window radius (pixels)
-    h_factor: 5.0           # Filtering strength (higher = smoother but may blur details)
+    h_factor: 20.0           # Filtering strength (higher = smoother but may blur details)
     fast_mode: true         # Use fast approximation for NLM
 
   # Normalization
@@ -51,7 +51,7 @@ inference:
 
   # Detection Parameters
   # These control the sensitivity vs. specificity trade-off.
-  confidence_thr: 0.1       # Minimum probability (0-1) to consider a pixel as mitochondria. Lower = Higher Recall (more detection).
+  confidence_thr: 0.2       # Minimum probability (0-1) to consider a pixel as mitochondria. Lower = Higher Recall (more detection).
   nms_threshold: 0.5        # Non-Maximum Suppression threshold. Overlap allowed between instances before suppression.
   nms_kernel: 5             # Window size for finding local maxima. Smaller = better for crowded/small mitos.
   stuff_area: 10            # Minimum area (pixels) for a detected object to be kept. Removes speckle noise.

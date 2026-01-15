@@ -4,6 +4,7 @@ openslide-bin
 tifffile
 numba
 hyperspy[all]
+napari[all]
 pywavelets
 pandas
 pyarrow

@@ -2,11 +2,9 @@ import hyperspy.api as hs
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
-import cv2
 import os
 import sys
 import yaml
-from empanada.models import PanopticDeepLab
 from empanada.inference.engines import PanopticDeepLabEngine
 
 # Add current directory to path to import utils
@@ -124,6 +122,7 @@ ax[1].imshow(mask, cmap=vis_params['cmap_mask'], alpha=vis_params['alpha']) # Ov
 ax[1].set_title('MitoNet Segmentation Overlay')
 ax[1].axis('off')
 
+plt.tight_layout()
 plt.savefig(save_path)
 print(f"Result saved to {save_path}")
 

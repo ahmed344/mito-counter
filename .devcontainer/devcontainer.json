@@ -3,8 +3,16 @@
 	"build": {
         "dockerfile": "Dockerfile"
     },
+    
+    "runArgs": [
+        "--gpus", "all",
+        "-v", "/tmp/.X11-unix:/tmp/.X11-unix"
+    ],
 
-    "runArgs": ["--gpus", "all"],
+    // New: This tells the container to use your specific display ID
+    "containerEnv": {
+        "DISPLAY": ":0"
+    },
 
 	// Configure tool-specific properties.
 	"customizations": {

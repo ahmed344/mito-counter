@@ -2,14 +2,10 @@
 import hyperspy.api as hs
 import numpy as np
 import matplotlib.pyplot as plt
-import cv2
-import os
-import pandas as pd
-import seaborn as sns
 
 # %%
 path_data = '/workspaces/mito-counter/data/Etude Calpaine 3/Condition - Calpaine 3'
-path_slide = f'{path_data}/SOL 1 - WT/SOL 1 - ME DATA/SOL1-1900X-0001.dm3'
+path_slide = f'{path_data}/TA 1 - WT/TA 1 - ME DATA/TA1-4800X-0002.dm3'
 
 # %%
 # load the md3 image
@@ -61,7 +57,7 @@ for a in ax: a.axis("off")
 plt.show()
 
 # %%
-denoised, denoised_u16 = denoise_nlm_2d(corrected, patch_size=15, patch_distance=15, h_factor=5, fast_mode=True, eps=1e-6)
+denoised, denoised_u16 = denoise_nlm_2d(corrected, patch_size=5, patch_distance=25, h_factor=20, fast_mode=True, eps=1e-6)
 
 fig, ax = plt.subplots(1, 3, figsize=(20, 6))
 ax[0].imshow(raw_img, cmap="gray");        ax[0].set_title("Raw")
