@@ -5,7 +5,7 @@ RUN apt-get update
 RUN apt-get install -y git sudo curl libfontconfig1 libxrender1 libgl1-mesa-glx libglib2.0-0 \
     libx11-xcb1 libxkbcommon-x11-0 libxcb1 libxcb-icccm4 libxcb-image0 \
     libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xfixes0 \
-    libxcb-xinerama0 libxcb-shape0 libxkbcommon0 libdbus-1-3
+    libxcb-xinerama0 libxcb-shape0 libxkbcommon0 libdbus-1-3 xvfb xauth
 
 # Add user so we don't need to run VS Code as root
 ARG USERNAME=vscode
