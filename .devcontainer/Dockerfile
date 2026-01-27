@@ -1,11 +1,9 @@
 FROM pytorch/pytorch:2.9.1-cuda13.0-cudnn9-runtime
 
-# Install basic utilities
+# Install basic utilities and OpenGL runtime deps for napari/vispy
 RUN apt-get update
-RUN apt-get install -y git sudo curl libfontconfig1 libxrender1 libgl1-mesa-glx libglib2.0-0 \
-    libx11-xcb1 libxkbcommon-x11-0 libxcb1 libxcb-icccm4 libxcb-image0 \
-    libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xfixes0 \
-    libxcb-xinerama0 libxcb-shape0 libxkbcommon0 libdbus-1-3 xvfb xauth
+RUN apt-get install -y git sudo curl libgl1-mesa-glx libgles2-mesa libegl1-mesa libx11-6 libxext6 libxrender1 libsm6 libxrandr2 libxi6 libxkbcommon-x11-0 libxcb1
+RUN rm -rf /var/lib/apt/lists/*
 
 # Add user so we don't need to run VS Code as root
 ARG USERNAME=vscode
@@ -24,3 +22,7 @@ USER $USERNAME
 # Copy requirements.txt and install dependencies
 COPY requirements.txt .
 RUN pip install --upgrade --no-cache-dir -r requirements.txt
+
+# Install napari in conda environment from empanada_env.yaml
+COPY empanada_env.yml .
+RUN conda env create -f empanada_env.yml
