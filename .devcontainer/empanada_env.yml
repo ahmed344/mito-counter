@@ -1,0 +1,13 @@
+name: empanada
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pyqt
+  - pip
+  - git
+  - pip:
+      - napari[all]==0.4.18
+      - numba==0.58.1
+      - empanada-napari==1.2.1
