@@ -9,7 +9,8 @@ Usage:
     --val-dir /workspaces/mito-counter/training_samples/validation \
     --ratio 0.2 \
     --seed 42 \
-    --downsample-factor 1.0
+    --downsample-factor 1.0 \
+    --augment-train
 """
 
 from __future__ import annotations
@@ -74,6 +75,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1.0,
         help="Downsample images/masks by factor (>= 1.0).",
+    )
+    # Enable data augmentation for training output only.
+    parser.add_argument(
+        "--augment-train",
+        action="store_true",
+        help="Augment training images with rotations and flip.",
     )
     return parser.parse_args()
 
@@ -204,6 +211,99 @@ def resize_array(image, factor: float, is_mask: bool):
     return cv2.resize(image, (new_width, new_height), interpolation=interp)
 
 
+def apply_rotation(image, k: int):
+    """Rotate an image by 90 degrees k times.
+
+    Args:
+        image: Image array to rotate.
+        k (int): Number of 90-degree rotations (1, 2, or 3).
+
+    Returns:
+        Rotated image array.
+    """
+    return cv2.rotate(image, {1: cv2.ROTATE_90_CLOCKWISE,
+                              2: cv2.ROTATE_180,
+                              3: cv2.ROTATE_90_COUNTERCLOCKWISE}[k])
+
+
+def apply_flip(image):
+    """Flip an image horizontally.
+
+    Args:
+        image: Image array to flip.
+
+    Returns:
+        Flipped image array.
+    """
+    return cv2.flip(image, 1)
+
+
+def build_augmented_targets(base_path: Path, suffix: str) -> Path:
+    """Create an augmented output path with a suffix.
+
+    Args:
+        base_path (Path): Original output path.
+        suffix (str): Suffix for augmentation.
+
+    Returns:
+        Path: Output path with suffix inserted before extension.
+    """
+    return base_path.with_name(f"{base_path.stem}_{suffix}{base_path.suffix}")
+
+
+def generate_transform_plan(height: int, width: int) -> list[str]:
+    """Return a list of augmentation tags without mathematical duplicates.
+
+    Args:
+        height (int): Image height.
+        width (int): Image width.
+
+    Returns:
+        list[str]: List of transform tags to apply.
+    """
+    transforms = ["rot90", "rot180", "rot270", "flip"]
+    # All listed transforms are mathematically distinct for any image size.
+    return transforms
+
+
+def write_augmented_pair(
+    image,
+    mask,
+    image_target: Path,
+    mask_target: Path,
+    transform: str,
+) -> None:
+    """Write an augmented image/mask pair with consistent naming.
+
+    Args:
+        image: Image array to transform.
+        mask: Mask array to transform.
+        image_target (Path): Base image output path.
+        mask_target (Path): Base mask output path.
+        transform (str): Transform tag.
+
+    Returns:
+        None
+    """
+    if transform == "flip":
+        aug_image = apply_flip(image)
+        aug_mask = apply_flip(mask)
+    else:
+        k = {"rot90": 1, "rot180": 2, "rot270": 3}[transform]
+        aug_image = apply_rotation(image, k)
+        aug_mask = apply_rotation(mask, k)
+    aug_image_path = build_augmented_targets(image_target, transform)
+    aug_mask_path = build_augmented_targets(mask_target, transform)
+    if aug_image_path.exists() or aug_mask_path.exists():
+        raise FileExistsError(
+            f"Destination already exists: {aug_image_path} or {aug_mask_path}"
+        )
+    if not cv2.imwrite(str(aug_image_path), aug_image):
+        raise ValueError(f"Failed to write image: {aug_image_path}")
+    if not cv2.imwrite(str(aug_mask_path), aug_mask):
+        raise ValueError(f"Failed to write image: {aug_mask_path}")
+
+
 def copy_or_downsample(
     source: Path,
     destination: Path,
@@ -238,6 +338,7 @@ def copy_pairs(
     pairs: list[tuple[Path, Path, Path]],
     destination: Path,
     downsample_factor: float,
+    augment: bool,
 ) -> None:
     """Copy (and optionally downsample) each image/mask pair into destination.
 
@@ -265,10 +366,33 @@ def copy_pairs(
         image_target.parent.mkdir(parents=True, exist_ok=True)
         mask_target.parent.mkdir(parents=True, exist_ok=True)
         # Copy or downsample image and mask consistently.
-        copy_or_downsample(
-            image_path, image_target, downsample_factor, is_mask=False
-        )
-        copy_or_downsample(mask_path, mask_target, downsample_factor, is_mask=True)
+        if downsample_factor == 1.0:
+            image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+            if image is None:
+                raise ValueError(f"Failed to read image: {image_path}")
+            if mask is None:
+                raise ValueError(f"Failed to read image: {mask_path}")
+        else:
+            image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+            if image is None:
+                raise ValueError(f"Failed to read image: {image_path}")
+            if mask is None:
+                raise ValueError(f"Failed to read image: {mask_path}")
+            image = resize_array(image, downsample_factor, is_mask=False)
+            mask = resize_array(mask, downsample_factor, is_mask=True)
+        if not cv2.imwrite(str(image_target), image):
+            raise ValueError(f"Failed to write image: {image_target}")
+        if not cv2.imwrite(str(mask_target), mask):
+            raise ValueError(f"Failed to write image: {mask_target}")
+        # Apply training-only augmentation with consistent naming.
+        if augment:
+            transforms = generate_transform_plan(image.shape[0], image.shape[1])
+            for transform in transforms:
+                write_augmented_pair(
+                    image, mask, image_target, mask_target, transform
+                )
 
 
 def main() -> None:
@@ -294,8 +418,8 @@ def main() -> None:
     if args.downsample_factor < 1.0:
         raise ValueError("Downsample factor must be >= 1.0.")
     # Copy and optionally downsample into the output directories.
-    copy_pairs(train_pairs, args.train_dir, args.downsample_factor)
-    copy_pairs(val_pairs, args.val_dir, args.downsample_factor)
+    copy_pairs(train_pairs, args.train_dir, args.downsample_factor, args.augment_train)
+    copy_pairs(val_pairs, args.val_dir, args.downsample_factor, False)
 
 
 if __name__ == "__main__":
