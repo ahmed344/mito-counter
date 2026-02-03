@@ -106,26 +106,28 @@ def _prepare_for_tiff(data: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
         "original_min": float(np.nanmin(data)),
         "original_max": float(np.nanmax(data)),
     }
-    if data.dtype in (np.uint8, np.uint16):
-        return data, info
-
     finite = np.isfinite(data)
     if not np.any(finite):
-        scaled = np.zeros_like(data, dtype=np.uint16)
-        info["conversion"] = "all_non_finite_to_zero_uint16"
+        scaled = np.zeros_like(data, dtype=np.uint8)
+        info["conversion"] = "all_non_finite_to_zero_uint8"
         return scaled, info
 
     data_min = float(np.nanmin(data))
     data_max = float(np.nanmax(data))
     if data_max == data_min:
-        scaled = np.zeros_like(data, dtype=np.uint16)
-        info["conversion"] = "constant_to_zero_uint16"
+        scaled = np.zeros_like(data, dtype=np.uint8)
+        info["conversion"] = "constant_to_zero_uint8"
         return scaled, info
 
-    scaled = (data - data_min) / (data_max - data_min)
+    finite_data = data[finite]
+    p1, p99 = np.percentile(finite_data, (1, 99.8))
+    if p99 == p1:
+        p1, p99 = data_min, data_max
+
+    scaled = (data - p1) / (p99 - p1)
     scaled = np.clip(scaled, 0.0, 1.0)
-    scaled = (scaled * np.iinfo(np.uint16).max).astype(np.uint16)
-    info["conversion"] = "linear_rescale_to_uint16"
+    scaled = (scaled * np.iinfo(np.uint8).max).astype(np.uint8)
+    info["conversion"] = "robust_rescale_to_uint8"
     return scaled, info
 
 

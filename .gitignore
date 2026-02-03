@@ -1,6 +1,9 @@
 # Data
 data/
 qp-projects/
+training_data/
+training_samples/
+models/
 
 # Images
 *.png
