@@ -1,0 +1,38 @@
+# Paths for MitoNet inference.
+paths:
+  # Root directory containing TIFF images (searched recursively).
+  input_dir: /workspaces/mito-counter/data/Calpaine_3/Processed
+  # Path to the TorchScript (.pth) model file.
+  model_pth: /workspaces/mito-counter/models/MitoNet_v1_finetuned/FinetunedModel_2.pth
+  # Path to the model config YAML used for norms and metadata.
+  config_yaml: /workspaces/mito-counter/models/MitoNet_v1_finetuned/FinetunedModel_2.yaml
+  # Downsample factor applied before inference (>= 1.0).
+  downsample_factor: 2.0
+  # Device for inference; must be "cuda".
+  device: cuda
+
+
+# Engine parameters for MitoNet inference.
+engine_params:
+  # Class IDs treated as instance ("thing") classes; only these get instance IDs.
+  # Example: [1] for mitochondria-only models.
+  thing_list:
+    - 1
+  # Encodes instance IDs as class*label_divisor + instance_id.
+  # Example: label_divisor=1000 yields IDs like 1001, 1002, ... for class 1.
+  label_divisor: 0
+  # Minimum area for "stuff" regions (pixels); smaller regions are removed.
+  # Example: 64 means stuff blobs smaller than 8x8 pixels are suppressed.
+  stuff_area: 64
+  # Label ID reserved for void/ignore regions in the panoptic map.
+  # Example: 0 keeps background as 0.
+  void_label: 0
+  # NMS threshold for instance center detection; higher filters more centers.
+  # Example: 0.1 is permissive; 0.3 is stricter.
+  nms_threshold: 0.2
+  # NMS kernel size for instance center detection (odd integer).
+  # Example: 7 uses a 7x7 window around each peak.
+  nms_kernel: 15
+  # Confidence threshold for semantic hardening (binary or multiclass).
+  # Example: 0.5 keeps pixels with >=50% foreground probability.
+  confidence_thr: 0.5
