@@ -8,6 +8,7 @@ pywavelets
 pandas
 pyarrow
 seaborn
+statannotations
 scikit-learn
 scikit-image
 opencv-python-headless
@@ -15,3 +16,4 @@ imagecodecs
 jupyter
 ipywidgets
 jupytext
+empanada-dl --no-deps

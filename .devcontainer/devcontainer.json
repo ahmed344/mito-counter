@@ -6,6 +6,7 @@
     
     "runArgs": [
         "--gpus", "all",
+        "--shm-size=ll32g",
         "-v", "/tmp/.X11-unix:/tmp/.X11-unix"
     ],
 
