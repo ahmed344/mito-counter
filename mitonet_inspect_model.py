@@ -1,7 +1,7 @@
 import torch
 import os
 
-model_path = 'MitoNet_v1.pth'
+model_path = '/workspaces/mito-counter/models/MitoNet_v1.pth'
 if not os.path.exists(model_path):
     print("Model not found")
     exit()
