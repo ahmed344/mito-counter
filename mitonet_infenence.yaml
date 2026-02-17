@@ -3,11 +3,11 @@ paths:
   # Root directory containing TIFF images (searched recursively).
   input_dir: /workspaces/mito-counter/data/Calpaine_3/Processed
   # Path to the TorchScript (.pth) model file.
-  model_pth: /workspaces/mito-counter/models/MitoNet_v1_finetuned/FinetunedModel_2.pth
+  model_pth: /workspaces/mito-counter/models/MitoNet_v1.pth
   # Path to the model config YAML used for norms and metadata.
   config_yaml: /workspaces/mito-counter/models/MitoNet_v1_finetuned/FinetunedModel_2.yaml
   # Downsample factor applied before inference (>= 1.0).
-  downsample_factor: 2.0
+  downsample_factor: 4.0
   # Device for inference; must be "cuda".
   device: cuda
 
@@ -29,10 +29,10 @@ engine_params:
   void_label: 0
   # NMS threshold for instance center detection; higher filters more centers.
   # Example: 0.1 is permissive; 0.3 is stricter.
-  nms_threshold: 0.2
+  nms_threshold: 0.1
   # NMS kernel size for instance center detection (odd integer).
   # Example: 7 uses a 7x7 window around each peak.
-  nms_kernel: 15
+  nms_kernel: 7
   # Confidence threshold for semantic hardening (binary or multiclass).
   # Example: 0.5 keeps pixels with >=50% foreground probability.
   confidence_thr: 0.5
