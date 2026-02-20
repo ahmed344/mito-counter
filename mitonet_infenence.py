@@ -186,6 +186,28 @@ def colorize_labels(labels: np.ndarray) -> np.ndarray:
     return rgb
 
 
+def compute_minimum_feret_diameter(mask: np.ndarray) -> float:
+    """Compute the minimum Feret's diameter from a binary instance mask.
+
+    Args:
+        mask (np.ndarray): Binary mask of a single labeled object, shape (H, W).
+
+    Returns:
+        float: Minimum Feret's diameter in pixels.
+    """
+    mask_u8 = mask.astype(np.uint8)
+    contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return 0.0
+
+    contour = max(contours, key=cv2.contourArea)
+    if contour.shape[0] < 3:
+        return 0.0
+
+    _, (width, height), _ = cv2.minAreaRect(contour)
+    return float(min(width, height))
+
+
 def compute_instance_metrics(labels: np.ndarray) -> list[dict]:
     """Compute per-instance metrics from a label image.
 
@@ -216,6 +238,8 @@ def compute_instance_metrics(labels: np.ndarray) -> list[dict]:
         )
         major = float(major_attr) if major_attr else 0.0
         minor = float(minor_attr) if minor_attr else 0.0
+        corrected_area = float(np.pi * ((minor / 2.0) ** 2))
+        minimum_feret_diameter = compute_minimum_feret_diameter(prop.image)
         elongation = (major / minor) if minor > 0 else 0.0
         perimeter = float(prop.perimeter) if prop.perimeter else 0.0
         circularity = (4.0 * np.pi * area / (perimeter ** 2)) if perimeter > 0 else 0.0
@@ -226,8 +250,10 @@ def compute_instance_metrics(labels: np.ndarray) -> list[dict]:
                 "id": instance_id,
                 "centroid": f"({centroid_rc[1]:.2f}, {centroid_rc[0]:.2f})",
                 "area": area,
+                "corrected_area": corrected_area,
                 "major_axis_length": major,
                 "minor_axis_length": minor,
+                "minimum_feret_diameter": minimum_feret_diameter,
                 "aspect_ratio_elongation": elongation,
                 "circularity_form_factor": circularity,
                 "solidity_branching": solidity,
@@ -267,8 +293,10 @@ def write_metrics_csv(path: Path, metrics: list[dict]) -> None:
         "Id",
         "Centroid",
         "Area",
+        "Corrected_area",
         "Major_axis_length",
         "Minor_axis_length",
+        "Minimum_Feret_Diameter",
         "Elongation",
         "Circularity",
         "Solidity",
@@ -283,8 +311,10 @@ def write_metrics_csv(path: Path, metrics: list[dict]) -> None:
                     "Id": row["id"],
                     "Centroid": row["centroid"],
                     "Area": f"{row['area']:.2f}",
+                    "Corrected_area": f"{row['corrected_area']:.2f}",
                     "Major_axis_length": f"{row['major_axis_length']:.2f}",
                     "Minor_axis_length": f"{row['minor_axis_length']:.2f}",
+                    "Minimum_Feret_Diameter": f"{row['minimum_feret_diameter']:.2f}",
                     "Elongation": f"{row['aspect_ratio_elongation']:.3f}",
                     "Circularity": f"{row['circularity_form_factor']:.3f}",
                     "Solidity": f"{row['solidity_branching']:.3f}",

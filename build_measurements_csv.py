@@ -71,8 +71,10 @@ def main() -> None:
         "Id",
         "Centroid",
         "Area",
+        "Corrected_area",
         "Major_axis_length",
         "Minor_axis_length",
+        "Minimum_Feret_Diameter",
         "Elongation",
         "Circularity",
         "Solidity",
@@ -108,6 +110,9 @@ def main() -> None:
 
                     area_text = get_first_value(row, ["Area", "area"])
                     area_um2 = float(area_text) * (PIXEL_SIZE_UM ** 2)
+                    corrected_area_text = get_first_value(
+                        row, ["Corrected_area", "corrected_area"], required=False
+                    )
 
                     major_text = get_first_value(
                         row, ["Major_axis_length"], required=False
@@ -115,16 +120,35 @@ def main() -> None:
                     minor_text = get_first_value(
                         row, ["Minor_axis_length"], required=False
                     )
+                    min_feret_text = get_first_value(
+                        row,
+                        [
+                            "Minimum_Feret_Diameter",
+                            "minimum_feret_diameter",
+                            "Minimum Feret's Diameter",
+                        ],
+                        required=False,
+                    )
                     nnd_text = get_first_value(
                         row, ["NND", "Nearest Neighbor Distance (NND)"], required=False
                     )
 
+                    corrected_area_val = maybe_float(corrected_area_text)
                     major_val = maybe_float(major_text)
                     minor_val = maybe_float(minor_text)
+                    min_feret_val = maybe_float(min_feret_text)
                     nnd_val = maybe_float(nnd_text)
 
+                    corrected_area_um2 = (
+                        corrected_area_val * (PIXEL_SIZE_UM ** 2)
+                        if corrected_area_val is not None
+                        else None
+                    )
                     major_um = major_val * PIXEL_SIZE_UM if major_val is not None else None
                     minor_um = minor_val * PIXEL_SIZE_UM if minor_val is not None else None
+                    min_feret_um = (
+                        min_feret_val * PIXEL_SIZE_UM if min_feret_val is not None else None
+                    )
                     nnd_um = nnd_val * PIXEL_SIZE_UM if nnd_val is not None else None
 
                     writer.writerow(
@@ -135,12 +159,18 @@ def main() -> None:
                             "Id": get_first_value(row, ["Id", "id"]),
                             "Centroid": f"({cx_um:.6f}, {cy_um:.6f})",
                             "Area": f"{area_um2:.8f}",
+                            "Corrected_area": ""
+                            if corrected_area_um2 is None
+                            else f"{corrected_area_um2:.8f}",
                             "Major_axis_length": ""
                             if major_um is None
                             else f"{major_um:.6f}",
                             "Minor_axis_length": ""
                             if minor_um is None
                             else f"{minor_um:.6f}",
+                            "Minimum_Feret_Diameter": ""
+                            if min_feret_um is None
+                            else f"{min_feret_um:.6f}",
                             "Elongation": get_first_value(
                                 row, ["Elongation", "Aspect Ratio (Elongation)"]
                             ),

@@ -37,6 +37,19 @@ df["Muscle"] = df["Muscle"].astype("category")
 # Display the first few rows of the dataframe
 df.head()
 
+# %%
+# Get the metrics columns
+metrics = df.columns[5:]
+
+# Count the zero values in each column
+df[metrics].isin([0]).sum()
+
+# %%
+# Plot a histogram for each column
+df[metrics].hist(figsize=(25, 8), bins=70, layout=(2, np.ceil(metrics.shape[0] / 2).astype(int)))
+plt.savefig("/workspaces/mito-counter/data/Calpaine_3/results/figures/histograms.png", dpi=900)
+plt.show()
+# Count the zero values in each column
 
 # %%
 def plot_stat_boxplot(data, x, y, hue, unit_dict=None, test='Mann-Whitney', text_format='star', save_dir=None):
@@ -104,12 +117,14 @@ df_counts
 # Units Dictionary
 units = {
     "Area": "um^2",
+    "Corrected_area": "um^2",
     "Major_axis_length": "um",
     "Minor_axis_length": "um",
+    "Minimum_Feret_Diameter": "um",
     "Elongation": "",
     "Circularity": "",
     "Solidity": "",
-    "NND": "um",
+    "NND": "um"
 }
 
 # %%
