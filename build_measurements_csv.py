@@ -19,26 +19,65 @@ MUSCLE_MAP = {
     "TA": "Tibialis Anterior",
 }
 
-IMAGE_NUM_RE = re.compile(r"-(\d{4})_segmented_metrics\.csv$", re.IGNORECASE)
+BLOCK_RE = re.compile(r"(?:^|[^A-Z0-9])(SOL|TA)[\s_-]*([0-9]+)", re.IGNORECASE)
 
 
-def parse_image_number(path: Path) -> int:
-    """Extract trailing image number from a metrics filename."""
-    match = IMAGE_NUM_RE.search(path.name)
+def parse_block_number(path: Path) -> int:
+    """Extract block number that follows SOL/TA in a filename.
+
+    Args:
+        path (Path): Metrics CSV path whose stem may contain tokens such as ``SOL_8`` or ``TA-1``.
+
+    Returns:
+        int: Parsed block number that directly follows ``SOL`` or ``TA``.
+    """
+    match = BLOCK_RE.search(path.stem)
     if not match:
-        raise ValueError(f"Unable to parse image number from: {path.name}")
-    return int(match.group(1))
+        raise ValueError(f"Unable to parse block number from: {path.name}")
+    return int(match.group(2))
+
+
+def parse_image_label(path: Path) -> str:
+    """Extract image label from a metrics filename.
+
+    Args:
+        path (Path): Metrics CSV path ending with ``_segmented_metrics.csv``.
+
+    Returns:
+        str: Filename stem without the ``_segmented_metrics`` suffix.
+    """
+    stem = path.stem
+    suffix = "_segmented_metrics"
+    if not stem.lower().endswith(suffix):
+        raise ValueError(f"Unable to parse image label from: {path.name}")
+    return stem[: -len(suffix)]
 
 
 def parse_centroid(text: str) -> tuple[float, float]:
-    """Parse centroid string like '(x, y)' into floats."""
+    """Parse centroid text into numeric coordinates.
+
+    Args:
+        text (str): Centroid text in the form ``"(x, y)"``.
+
+    Returns:
+        tuple[float, float]: Parsed x and y centroid coordinates.
+    """
     cleaned = text.strip().lstrip("(").rstrip(")")
     x_str, y_str = [part.strip() for part in cleaned.split(",")]
     return float(x_str), float(y_str)
 
 
 def get_first_value(row: dict, keys: list[str], required: bool = True) -> str | None:
-    """Return the first present value in row for the given keys."""
+    """Return the first non-empty value for candidate keys.
+
+    Args:
+        row (dict): Input record from the CSV reader.
+        keys (list[str]): Ordered candidate column names to check.
+        required (bool): Whether to raise if none of the keys are found with values.
+
+    Returns:
+        str | None: First matching non-empty value, or ``None`` when optional and missing.
+    """
     for key in keys:
         if key in row and row[key] != "":
             return row[key]
@@ -48,13 +87,28 @@ def get_first_value(row: dict, keys: list[str], required: bool = True) -> str | 
 
 
 def maybe_float(text: str | None) -> float | None:
-    """Convert string to float if present."""
+    """Convert optional text to float.
+
+    Args:
+        text (str | None): String representation of a float, or ``None``.
+
+    Returns:
+        float | None: Parsed float when text is present, otherwise ``None``.
+    """
     if text is None:
         return None
     return float(text)
 
 
 def main() -> None:
+    """Build the consolidated measurements CSV.
+
+    Args:
+        None: This function does not accept arguments.
+
+    Returns:
+        None: Writes the consolidated CSV to disk.
+    """
     if not INPUT_ROOT.is_dir():
         raise FileNotFoundError(f"Input root not found: {INPUT_ROOT}")
 
@@ -67,6 +121,7 @@ def main() -> None:
     output_fields = [
         "Condition",
         "Muscle",
+        "Block",
         "image",
         "Id",
         "Centroid",
@@ -98,8 +153,8 @@ def main() -> None:
             if condition is None or muscle is None:
                 raise ValueError(f"Unknown condition/muscle in path: {metrics_path}")
 
-            image_num = parse_image_number(metrics_path)
-
+            block_num = parse_block_number(metrics_path)
+            image_label = parse_image_label(metrics_path)
             with open(metrics_path, "r", newline="", encoding="utf-8") as handle:
                 reader = csv.DictReader(handle)
                 for row in reader:
@@ -155,7 +210,8 @@ def main() -> None:
                         {
                             "Condition": condition,
                             "Muscle": muscle,
-                            "image": image_num,
+                            "Block": block_num,
+                            "image": image_label,
                             "Id": get_first_value(row, ["Id", "id"]),
                             "Centroid": f"({cx_um:.6f}, {cy_um:.6f})",
                             "Area": f"{area_um2:.8f}",

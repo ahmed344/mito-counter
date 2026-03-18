@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.19.0
+#       jupytext_version: 1.19.1
 #   kernelspec:
 #     display_name: base
 #     language: python
@@ -39,7 +39,7 @@ df.head()
 
 # %%
 # Get the metrics columns
-metrics = df.columns[5:]
+metrics = df.columns[6:]
 
 # Count the zero values in each column
 df[metrics].isin([0]).sum()
@@ -53,14 +53,36 @@ plt.show()
 
 # %%
 def plot_stat_boxplot(data, x, y, hue, unit_dict=None, test='Mann-Whitney', text_format='star', save_dir=None):
+    """Plot a grouped boxplot with statistical annotations.
+
+    Args:
+        data (pd.DataFrame): Source dataframe containing plotting columns.
+        x (str): Column name used on the x-axis.
+        y (str): Column name used as the numeric response variable.
+        hue (str): Column name used for grouping within each x category.
+        unit_dict (dict[str, str] | None): Optional mapping from metric name to display unit.
+        test (str): Statistical test name consumed by ``statannotations``.
+        text_format (str): Annotation style passed to ``statannotations``.
+        save_dir (str | None): Optional output directory where a PNG is saved.
+
+    Returns:
+        None: The function renders/saves the plot and does not return a value.
+    """
+    plot_data = data.copy()
+    plot_data[y] = pd.to_numeric(plot_data[y], errors="coerce")
+    plot_data = plot_data.dropna(subset=[x, y, hue])
+    if plot_data.empty:
+        print(f"Skipping {y}: no numeric data available after coercion.")
+        return None
+
     plt.figure(figsize=(8, 6))
     
-    x_order = sorted(data[x].unique())
-    hue_order = sorted(data[hue].unique())
+    x_order = sorted(plot_data[x].unique())
+    hue_order = sorted(plot_data[hue].unique())
     
     # 1. Create Boxplot
     ax = sns.boxplot(
-        data=data, x=x, y=y, hue=hue,
+        data=plot_data, x=x, y=y, hue=hue,
         order=x_order, hue_order=hue_order,
         linewidth=1.5, 
         palette="Set2",
@@ -76,7 +98,7 @@ def plot_stat_boxplot(data, x, y, hue, unit_dict=None, test='Mann-Whitney', text
         for hue_pair in hue_combinations:
             box_pairs.append(((x_val, hue_pair[0]), (x_val, hue_pair[1])))
             
-    annotator = Annotator(ax, box_pairs, data=data, x=x, y=y, hue=hue, 
+    annotator = Annotator(ax, box_pairs, data=plot_data, x=x, y=y, hue=hue, 
                           order=x_order, hue_order=hue_order)
     annotator.configure(test=test, text_format=text_format, loc='inside', verbose=0)
     annotator.apply_and_annotate()
@@ -110,8 +132,18 @@ def plot_stat_boxplot(data, x, y, hue, unit_dict=None, test='Mann-Whitney', text
 
 # %%
 # Count the number of rows (objects) per image, preserving Condition and Muscle info
-df_counts = df.groupby(['Condition', 'Muscle', 'image'], observed=True).size().reset_index(name='Count')
+df_counts = df.groupby(['Condition', 'Muscle', 'Block', 'image'], observed=True).size().reset_index(name='Count')
 df_counts
+
+# %%
+df_counts.info()
+
+# %%
+# Plot the counts for different blocks
+plt.figure(figsize=(20, 6))
+sns.boxplot(y="Count", x="Block", data=df_counts, hue="Muscle", gap=0.1)
+plt.savefig("/workspaces/mito-counter/data/Calpaine_3/results/figures/counts_by_block.png", dpi=900)
+plt.show()
 
 # %%
 # Units Dictionary
@@ -135,7 +167,7 @@ save_dir = '/workspaces/mito-counter/data/Calpaine_3/results/figures'
 plot_stat_boxplot(df_counts, x='Muscle', y='Count', hue='Condition', save_dir=save_dir)
 
 # Plot Morphological measurments with Units
-for measurment in df.columns[5:]:
+for measurment in metrics:
     if measurment in df.columns:
         plot_stat_boxplot(
             data=df, 
@@ -190,6 +222,5 @@ for muscle in sorted(df["Muscle"].dropna().unique()):
         })
 
 results_df = pd.DataFrame(results).sort_values(["Measurment", "Muscle"])
+results_df.to_csv("/workspaces/mito-counter/data/Calpaine_3/results/statistics.csv", index=False)
 results_df
-
-# %%
