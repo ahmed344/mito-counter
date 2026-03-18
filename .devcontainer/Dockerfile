@@ -21,7 +21,8 @@ USER $USERNAME
 
 # Copy requirements.txt and install dependencies
 COPY requirements.txt .
-RUN pip install --upgrade --no-cache-dir -r requirements.txt
+RUN pip install --upgrade --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --no-deps empanada-dl
 
 # Install napari in conda environment from empanada_env.yaml
 COPY empanada_env.yml .

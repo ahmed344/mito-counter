@@ -42,11 +42,23 @@ def _extract_genotype(path_parts: Iterable[str]) -> Optional[str]:
 
 
 def _extract_muscle(path_parts: Iterable[str]) -> Optional[str]:
-    for part in path_parts:
+    """Extract the muscle label from directory path parts.
+
+    Args:
+        path_parts (Iterable[str]): Sequence of directory names from a DM3 relative path.
+
+    Returns:
+        Optional[str]: A normalized muscle label such as ``SOL_6`` or ``TA``, or ``None`` when no
+        muscle token is found.
+    """
+    parts = list(path_parts)
+    for part in parts:
         upper = part.upper()
         match = re.search(r"\b(SOL|TA)\s*([0-9]+)\b", upper)
         if match:
             return f"{match.group(1)}_{match.group(2)}"
+    for part in parts:
+        upper = part.upper()
         match = re.search(r"\b(SOL|TA)\b", upper)
         if match:
             return match.group(1)
