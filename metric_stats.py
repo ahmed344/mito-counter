@@ -12,7 +12,7 @@
 #     name: python3
 # ---
 
-# %%
+# %% Imports and plotting configuration
 import numpy as np
 import pandas as pd
 from itertools import combinations
@@ -26,32 +26,32 @@ from scipy.stats import mannwhitneyu
 # Set the style for the plots
 sns.set_style("whitegrid")
 
-# %%
-# Load the data
+# %% Load and prepare input data
+# Read per-object morphological measurements exported by the pipeline.
 df = pd.read_csv("/workspaces/mito-counter/data/Calpaine_3/results/measurments.csv")
 
-# transform the Condition and Muscle columns to a categorical variable
+# Treat grouping columns as categorical to keep consistent ordering/group handling.
 df["Condition"] = df["Condition"].astype("category")
 df["Muscle"] = df["Muscle"].astype("category")
 
 # Display the first few rows of the dataframe
 df.head()
 
-# %%
-# Get the metrics columns
+# %% Quick distribution checks
+# Metric columns start after metadata columns.
 metrics = df.columns[6:]
 
 # Count the zero values in each column
 df[metrics].isin([0]).sum()
 
-# %%
-# Plot a histogram for each column
+# %% Plot histograms for all numeric metrics
+# This gives a first-pass view of skew/outliers for each measurement.
 df[metrics].hist(figsize=(25, 8), bins=70, layout=(2, np.ceil(metrics.shape[0] / 2).astype(int)))
 plt.savefig("/workspaces/mito-counter/data/Calpaine_3/results/figures/histograms.png", dpi=900)
 plt.show()
 # Count the zero values in each column
 
-# %%
+# %% Plot helper with statistical annotations
 def plot_stat_boxplot(data, x, y, hue, unit_dict=None, test='Mann-Whitney', text_format='star', save_dir=None):
     """Plot a grouped boxplot with statistical annotations.
 
@@ -130,23 +130,21 @@ def plot_stat_boxplot(data, x, y, hue, unit_dict=None, test='Mann-Whitney', text
     plt.show()
 
 
-# %%
-# Count the number of rows (objects) per image, preserving Condition and Muscle info
+# %% Build count table (objects per image)
+# Each row in df_counts is one image-level count used for count comparisons.
 df_counts = df.groupby(['Condition', 'Muscle', 'Block', 'image'], observed=True).size().reset_index(name='Count')
 df_counts
 
-# %%
+# %% Sanity check the count table schema/types
 df_counts.info()
 
-# %%
-# Plot the counts for different blocks
+# %% Explore count variation across blocks
 plt.figure(figsize=(20, 6))
 sns.boxplot(y="Count", x="Block", data=df_counts, hue="Muscle", gap=0.1)
 plt.savefig("/workspaces/mito-counter/data/Calpaine_3/results/figures/counts_by_block.png", dpi=900)
 plt.show()
 
-# %%
-# Units Dictionary
+# %% Human-readable units for y-axis labels
 units = {
     "Area": "um^2",
     "Corrected_area": "um^2",
@@ -159,8 +157,8 @@ units = {
     "NND": "um"
 }
 
-# %%
-# Set the save directory
+# %% Generate annotated comparison boxplots
+# All plots are saved to the same figures directory.
 save_dir = '/workspaces/mito-counter/data/Calpaine_3/results/figures'
 
 # Plot Counts (No units needed, or you can add "objects" if you like)
@@ -169,6 +167,7 @@ plot_stat_boxplot(df_counts, x='Muscle', y='Count', hue='Condition', save_dir=sa
 # Plot Morphological measurments with Units
 for measurment in metrics:
     if measurment in df.columns:
+        # Reuse one plotting helper so all outputs have identical style/stat format.
         plot_stat_boxplot(
             data=df, 
             x='Muscle', 
@@ -178,8 +177,8 @@ for measurment in metrics:
             save_dir=save_dir
         )
 
-# %%
-# Now perform a Mann-Whitney U test for each measurment for each muscle between the two conditions
+# %% Run statistical tests and export results
+# For each muscle, compare the two conditions for every measurement and for Count.
 
 # Determine the two conditions to compare
 if isinstance(df["Condition"].dtype, pd.CategoricalDtype):
@@ -198,6 +197,7 @@ measurment_cols = [
 
 results = []
 for muscle in sorted(df["Muscle"].dropna().unique()):
+    # Restrict testing to one muscle at a time.
     df_muscle = df[df["Muscle"] == muscle]
     group_a = df_muscle[df_muscle["Condition"] == conditions[0]]
     group_b = df_muscle[df_muscle["Condition"] == conditions[1]]
@@ -209,6 +209,7 @@ for muscle in sorted(df["Muscle"].dropna().unique()):
         if len(values_a) == 0 or len(values_b) == 0:
             continue
 
+        # Two-sided non-parametric comparison between conditions.
         u_stat, p_value = mannwhitneyu(values_a, values_b, alternative="two-sided")
         results.append({
             "Measurment": measurment,
@@ -221,6 +222,28 @@ for muscle in sorted(df["Muscle"].dropna().unique()):
             "p_value": p_value,
         })
 
+# Add count-based tests (per image object counts), matching the same output schema.
+for muscle in sorted(df_counts["Muscle"].dropna().unique()):
+    df_counts_muscle = df_counts[df_counts["Muscle"] == muscle]
+    count_group_a = df_counts_muscle[df_counts_muscle["Condition"] == conditions[0]]["Count"].dropna()
+    count_group_b = df_counts_muscle[df_counts_muscle["Condition"] == conditions[1]]["Count"].dropna()
+
+    if len(count_group_a) == 0 or len(count_group_b) == 0:
+        continue
+
+    count_u_stat, count_p_value = mannwhitneyu(count_group_a, count_group_b, alternative="two-sided")
+    results.append({
+        "Measurment": "Count",
+        "Muscle": muscle,
+        "Condition_A": conditions[0],
+        "Condition_B": conditions[1],
+        "N_A": len(count_group_a),
+        "N_B": len(count_group_b),
+        "U": count_u_stat,
+        "p_value": count_p_value,
+    })
+
+# Save one combined table containing both measurement and count test results.
 results_df = pd.DataFrame(results).sort_values(["Measurment", "Muscle"])
 results_df.to_csv("/workspaces/mito-counter/data/Calpaine_3/results/statistics.csv", index=False)
 results_df
