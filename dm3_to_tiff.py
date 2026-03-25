@@ -11,7 +11,7 @@ import numpy as np
 import tifffile as tif
 
 
-DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/Etude Calpaine 3/260121 - Ahmed"
+DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/Calpaine_3/Raw"
 DEFAULT_OUTPUT_ROOT = "/workspaces/mito-counter/data/Calpaine_3/Processed"
 
 MAGNIFICATION_TOKEN = "6800X"
