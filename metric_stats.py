@@ -28,7 +28,7 @@ sns.set_style("whitegrid")
 
 # %% Load and prepare input data
 # Read per-object morphological measurements exported by the pipeline.
-df = pd.read_csv("/workspaces/mito-counter/data/Calpaine_3/results/measurments.csv")
+df = pd.read_csv("/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv")
 
 # Treat grouping columns as categorical to keep consistent ordering/group handling.
 df["Condition"] = df["Condition"].astype("category")
@@ -39,7 +39,7 @@ df.head()
 
 # %% Quick distribution checks
 # Metric columns start after metadata columns.
-metrics = df.columns[6:]
+metrics = df.columns[6:-1]
 
 # Count the zero values in each column
 df[metrics].isin([0]).sum()
@@ -78,14 +78,22 @@ def plot_stat_boxplot(data, x, y, hue, unit_dict=None, test='Mann-Whitney', text
     plt.figure(figsize=(8, 6))
     
     x_order = sorted(plot_data[x].unique())
-    hue_order = sorted(plot_data[hue].unique())
+    if hue == "Condition":
+        hue_order = sorted(
+            plot_data[hue].dropna().unique(),
+            key=lambda v: (0 if ("wildtype" in str(v).lower() or str(v).strip().lower() == "wt" or str(v).strip().lower().endswith("_wt"))
+                           else 1 if ("knockout" in str(v).lower() or str(v).strip().lower() == "ko" or str(v).strip().lower().endswith("_ko"))
+                           else 2, str(v).lower())
+        )
+    else:
+        hue_order = sorted(plot_data[hue].unique())
     
     # 1. Create Boxplot
     ax = sns.boxplot(
         data=plot_data, x=x, y=y, hue=hue,
         order=x_order, hue_order=hue_order,
         linewidth=1.5, 
-        palette="Set2",
+        palette=["tab:blue", "tab:orange"],
         showfliers=False,
         gap=0.2,
         width=0.6
@@ -182,9 +190,15 @@ for measurment in metrics:
 
 # Determine the two conditions to compare
 if isinstance(df["Condition"].dtype, pd.CategoricalDtype):
-    conditions = list(df["Condition"].cat.categories)
+    condition_values = list(df["Condition"].cat.categories)
 else:
-    conditions = sorted(df["Condition"].dropna().unique())
+    condition_values = list(df["Condition"].dropna().unique())
+conditions = sorted(
+    condition_values,
+    key=lambda v: (0 if ("wildtype" in str(v).lower() or str(v).strip().lower() == "wt" or str(v).strip().lower().endswith("_wt"))
+                   else 1 if ("knockout" in str(v).lower() or str(v).strip().lower() == "ko" or str(v).strip().lower().endswith("_ko"))
+                   else 2, str(v).lower())
+)
 
 if len(conditions) != 2:
     raise ValueError(f"Expected exactly 2 conditions, found {len(conditions)}: {conditions}")

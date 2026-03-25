@@ -208,14 +208,29 @@ def compute_minimum_feret_diameter(mask: np.ndarray) -> float:
     return float(min(width, height))
 
 
+def count_connected_parts(mask: np.ndarray) -> int:
+    """Count connected foreground components in a binary instance mask.
+
+    Args:
+        mask (np.ndarray): Binary mask of one instance, shape (H, W).
+
+    Returns:
+        int: Number of connected foreground components (8-connectivity).
+    """
+    mask_u8 = mask.astype(np.uint8)
+    num_labels, _ = cv2.connectedComponents(mask_u8, connectivity=8)
+    return max(0, int(num_labels) - 1)
+
+
 def compute_instance_metrics(labels: np.ndarray) -> list[dict]:
     """Compute per-instance metrics from a label image.
 
     Args:
-        labels: Integer label map where 0 is background.
+        labels (np.ndarray): Integer label map where 0 is background.
 
     Returns:
-        List of per-instance metrics dictionaries.
+        list[dict]: Per-instance metric dictionaries that include
+        connected-part counts for each segmentation.
     """
     from skimage.measure import regionprops
 
@@ -223,6 +238,8 @@ def compute_instance_metrics(labels: np.ndarray) -> list[dict]:
     metrics: list[dict] = []
     centroids = []
     for prop in props:
+        connected_parts = count_connected_parts(prop.image)
+
         instance_id = int(prop.label)
         centroid_rc = prop.centroid
         area = float(prop.area)
@@ -260,6 +277,7 @@ def compute_instance_metrics(labels: np.ndarray) -> list[dict]:
                 "nearest_neighbor_distance": 0.0,
                 "centroid_x": float(centroid_rc[1]),
                 "centroid_y": float(centroid_rc[0]),
+                "connected_parts": connected_parts,
             }
         )
         centroids.append((float(centroid_rc[1]), float(centroid_rc[0])))
@@ -301,6 +319,7 @@ def write_metrics_csv(path: Path, metrics: list[dict]) -> None:
         "Circularity",
         "Solidity",
         "NND",
+        "Connected_parts",
     ]
     with open(path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -319,6 +338,7 @@ def write_metrics_csv(path: Path, metrics: list[dict]) -> None:
                     "Circularity": f"{row['circularity_form_factor']:.3f}",
                     "Solidity": f"{row['solidity_branching']:.3f}",
                     "NND": f"{row['nearest_neighbor_distance']:.3f}",
+                    "Connected_parts": int(row["connected_parts"]),
                 }
             )
 
@@ -415,21 +435,8 @@ def main() -> None:
         metrics_path = output_path.with_name(f"{output_path.stem}_metrics.csv")
         write_metrics_csv(metrics_path, metrics)
 
-        # Convert to colorful visualization and annotate IDs at centroids.
+        # Convert to colorful visualization.
         color = colorize_labels(pan_np)
-        for row in metrics:
-            cx = int(round(row["centroid_x"]))
-            cy = int(round(row["centroid_y"]))
-            cv2.putText(
-                color,
-                str(row["id"]),
-                (cx, cy),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                2,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
 
         # Write output beside the input image.
         write_tiff(output_path, color)
