@@ -14,28 +14,57 @@ import tifffile as tif
 DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/Calpaine_3/Raw"
 DEFAULT_OUTPUT_ROOT = "/workspaces/mito-counter/data/Calpaine_3/Processed"
 
-MAGNIFICATION_TOKEN = "6800X"
+DEFAULT_MAGNIFICATION_TOKEN = "6800X"
+MUSCLE_TOKENS = ("SOL", "TA", "EOM")
 
 
-def find_dm3_files(root: str) -> Iterable[str]:
+def find_dm3_files(root: str, magnification_token: Optional[str]) -> Iterable[str]:
+    """Yield DM3 file paths under a root directory.
+
+    Args:
+        root (str): Root directory to recursively scan.
+        magnification_token (Optional[str]): Token required in filenames to keep a file, or
+            ``None`` to disable magnification filtering.
+
+    Returns:
+        Iterable[str]: Iterator of absolute DM3 file paths that match the filter.
+    """
     for dirpath, _, filenames in os.walk(root):
         for name in filenames:
             if not name.lower().endswith(".dm3"):
                 continue
-            if MAGNIFICATION_TOKEN.lower() not in name.lower():
+            if magnification_token and magnification_token.lower() not in name.lower():
                 continue
             yield os.path.join(dirpath, name)
 
 
 def _normalize_whitespace(value: str) -> str:
+    """Normalize whitespace inside a token for path-safe naming.
+
+    Args:
+        value (str): Input token possibly containing spaces.
+
+    Returns:
+        str: Token with spaces replaced by underscores.
+    """
     return value.replace(" ", "_")
 
 
 def _extract_genotype(path_parts: Iterable[str]) -> Optional[str]:
+    """Extract a normalized genotype label from path segments.
+
+    Args:
+        path_parts (Iterable[str]): Sequence of path or filename components to inspect.
+
+    Returns:
+        Optional[str]: One of ``KO-C3``, ``DMD``, ``WT`` when detected, else ``None``.
+    """
     for part in path_parts:
         upper = part.upper()
         if re.search(r"\bKO\s*-?\s*C3\b", upper):
             return "KO-C3"
+        if re.search(r"\bDMD\b", upper):
+            return "DMD"
         if re.search(r"\bWT\b", upper):
             return "WT"
     return None
@@ -48,45 +77,76 @@ def _extract_muscle(path_parts: Iterable[str]) -> Optional[str]:
         path_parts (Iterable[str]): Sequence of directory names from a DM3 relative path.
 
     Returns:
-        Optional[str]: A normalized muscle label such as ``SOL_6`` or ``TA``, or ``None`` when no
+        Optional[str]: A normalized muscle label such as ``SOL_6`` or ``EOM``, or ``None`` when no
         muscle token is found.
     """
+    token_pattern = "|".join(MUSCLE_TOKENS)
     parts = list(path_parts)
     for part in parts:
         upper = part.upper()
-        match = re.search(r"\b(SOL|TA)\s*([0-9]+)\b", upper)
+        match = re.search(rf"\b({token_pattern})\b[^0-9]*([0-9]+)\b", upper)
         if match:
             return f"{match.group(1)}_{match.group(2)}"
     for part in parts:
         upper = part.upper()
-        match = re.search(r"\b(SOL|TA)\b", upper)
+        match = re.search(rf"\b({token_pattern})\b", upper)
         if match:
             return match.group(1)
     return None
 
 
 def extract_labels(input_root: str, dm3_path: str) -> Tuple[str, str]:
+    """Extract genotype and muscle labels from a DM3 path.
+
+    Args:
+        input_root (str): Dataset input root used to compute the relative path.
+        dm3_path (str): Absolute DM3 file path.
+
+    Returns:
+        Tuple[str, str]: ``(genotype, muscle)`` with ``UNKNOWN`` fallbacks when parsing fails.
+    """
     rel = os.path.relpath(dm3_path, input_root)
     parts = rel.split(os.sep)
     genotype = _extract_genotype(parts) or "UNKNOWN"
     muscle = _extract_muscle(parts)
     filename = os.path.basename(dm3_path)
-    if muscle is None or muscle in {"TA", "SOL"}:
-        match = re.search(r"\b(SOL|TA)\s*([0-9]+)\b", filename.upper())
+    if muscle is None or muscle in set(MUSCLE_TOKENS):
+        token_pattern = "|".join(MUSCLE_TOKENS)
+        match = re.search(rf"\b({token_pattern})\b[^0-9]*([0-9]+)\b", filename.upper())
         if match:
             muscle = f"{match.group(1)}_{match.group(2)}"
         elif muscle is None:
-            match = re.search(r"\b(SOL|TA)\b", filename.upper())
+            match = re.search(rf"\b({token_pattern})\b", filename.upper())
             muscle = match.group(1) if match else "UNKNOWN"
     return genotype, muscle
 
 
 def _extract_muscle_group(muscle: str) -> str:
-    match = re.match(r"^(TA|SOL)", muscle.upper())
+    """Extract the top-level muscle group token from a detailed muscle label.
+
+    Args:
+        muscle (str): Muscle label such as ``TA_2`` or ``EOM``.
+
+    Returns:
+        str: Muscle group token (``TA``, ``SOL``, ``EOM``) or ``UNKNOWN``.
+    """
+    token_pattern = "|".join(MUSCLE_TOKENS)
+    match = re.match(rf"^({token_pattern})", muscle.upper())
     return match.group(1) if match else "UNKNOWN"
 
 
 def build_output_paths(output_root: str, genotype: str, muscle: str, dm3_path: str) -> Tuple[str, str]:
+    """Build destination TIFF and JSON paths for a DM3 image.
+
+    Args:
+        output_root (str): Root directory for exported files.
+        genotype (str): Parsed genotype label.
+        muscle (str): Parsed muscle label.
+        dm3_path (str): Source DM3 path.
+
+    Returns:
+        Tuple[str, str]: ``(tiff_output_path, json_output_path)``.
+    """
     safe_genotype = _normalize_whitespace(genotype)
     muscle_group = _extract_muscle_group(muscle)
     safe_muscle = _normalize_whitespace(muscle_group)
@@ -179,16 +239,39 @@ def export_dm3(dm3_path: str, output_root: str, input_root: str, dry_run: bool =
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse converter CLI arguments.
+
+    Args:
+        None
+
+    Returns:
+        argparse.Namespace: Parsed command-line options.
+    """
     parser = argparse.ArgumentParser(description="Convert DM3 files to TIFF with metadata.")
     parser.add_argument("--input-root", default=DEFAULT_INPUT_ROOT, help="Input root with DM3 files.")
     parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT, help="Output root for TIFF exports.")
+    parser.add_argument(
+        "--magnification-token",
+        default=DEFAULT_MAGNIFICATION_TOKEN,
+        help="Filename token to filter magnifications (use empty string to disable).",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Only print planned outputs.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.magnification_token = args.magnification_token.strip() or None
+    return args
 
 
 def main() -> None:
+    """Run the DM3-to-TIFF conversion pipeline.
+
+    Args:
+        None
+
+    Returns:
+        None: This function is executed for side effects only.
+    """
     args = parse_args()
-    dm3_files = list(find_dm3_files(args.input_root))
+    dm3_files = list(find_dm3_files(args.input_root, args.magnification_token))
     if not dm3_files:
         print(f"No .dm3 files found under: {args.input_root}")
         return

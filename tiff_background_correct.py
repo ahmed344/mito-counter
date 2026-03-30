@@ -2,7 +2,7 @@
 import argparse
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Iterable, Tuple
+from typing import Iterable, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -10,7 +10,11 @@ from skimage import exposure
 import tifffile as tif
 
 
-DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/Calpaine_3/Processed"
+DEFAULT_INPUT_ROOTS = {
+    "calpaine_3": "/workspaces/mito-counter/data/Calpaine_3/Processed",
+    "dmd": "/workspaces/mito-counter/data/DMD/Processed",
+}
+DEFAULT_INPUT_ROOT = DEFAULT_INPUT_ROOTS["calpaine_3"]
 
 
 def find_tiff_files(root: str) -> Iterable[str]:
@@ -28,6 +32,21 @@ def find_tiff_files(root: str) -> Iterable[str]:
             lower = name.lower()
             if lower.endswith((".tif", ".tiff")) and "_corrected" not in lower:
                 yield os.path.join(dirpath, name)
+
+
+def resolve_input_root(input_root: Optional[str], dataset: str) -> str:
+    """Resolve the input root from CLI override or dataset preset.
+
+    Args:
+        input_root (Optional[str]): User-provided input root override.
+        dataset (str): Dataset key used to select default processed root.
+
+    Returns:
+        str: Effective input root path for TIFF discovery.
+    """
+    if input_root:
+        return input_root
+    return DEFAULT_INPUT_ROOTS.get(dataset, DEFAULT_INPUT_ROOT)
 
 
 def shading_correct_flatfield(
@@ -106,7 +125,17 @@ def parse_args() -> argparse.Namespace:
         argparse.Namespace: Parsed argparse namespace.
     """
     parser = argparse.ArgumentParser(description="Background-correct TIFF images (no denoise).")
-    parser.add_argument("--input-root", default=DEFAULT_INPUT_ROOT, help="Root folder of TIFF files.")
+    parser.add_argument(
+        "--dataset",
+        choices=sorted(DEFAULT_INPUT_ROOTS.keys()),
+        default="calpaine_3",
+        help="Dataset preset used when --input-root is not provided.",
+    )
+    parser.add_argument(
+        "--input-root",
+        default=None,
+        help="Root folder of TIFF files. Overrides --dataset preset when provided.",
+    )
     parser.add_argument("--sigma", type=int, default=400, help="Gaussian sigma for background.")
     parser.add_argument(
         "--workers",
@@ -129,10 +158,11 @@ def main() -> None:
     """
     # Collect candidate TIFF files.
     args = parse_args()
+    input_root = resolve_input_root(args.input_root, args.dataset)
     # Gather all candidate input files once.
-    tiff_files = list(find_tiff_files(args.input_root))
+    tiff_files = list(find_tiff_files(input_root))
     if not tiff_files:
-        print(f"No TIFF files found under: {args.input_root}")
+        print(f"No TIFF files found under: {input_root}")
         return
 
     # If dry-run, just show planned outputs.
