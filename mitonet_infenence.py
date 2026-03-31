@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import csv
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -343,6 +344,36 @@ def write_metrics_csv(path: Path, metrics: list[dict]) -> None:
             )
 
 
+def resolve_inference_images(input_dir: Path, input_file: Optional[str]) -> list[Path]:
+    """Resolve image paths for inference from config settings.
+
+    Args:
+        input_dir (Path): Root directory used for recursive image discovery.
+        input_file (Optional[str]): Optional single TIFF path to process. Relative paths are
+            resolved against ``input_dir``.
+
+    Returns:
+        list[Path]: List of TIFF image paths to process.
+    """
+    if input_file:
+        single_path = Path(input_file)
+        if not single_path.is_absolute():
+            single_path = input_dir / single_path
+        if not single_path.is_file():
+            raise FileNotFoundError(f"Configured input_file not found: {single_path}")
+        if single_path.suffix.lower() not in {".tif", ".tiff"}:
+            raise ValueError(f"Configured input_file must be a TIFF: {single_path}")
+        return [single_path]
+
+    return sorted(
+        [
+            p
+            for p in input_dir.rglob("*")
+            if p.suffix.lower() in {".tif", ".tiff"} and p.name.endswith("_corrected.tif")
+        ]
+    )
+
+
 def main() -> None:
     """Run batch inference over the input directory.
 
@@ -355,11 +386,13 @@ def main() -> None:
     with open(INFERENCE_CONFIG, "r", encoding="utf-8") as handle:
         inference_cfg = yaml.safe_load(handle)
 
-    input_dir = Path(inference_cfg["paths"]["input_dir"])
-    model_pth = Path(inference_cfg["paths"]["model_pth"])
-    config_yaml = Path(inference_cfg["paths"]["config_yaml"])
-    downsample_factor = float(inference_cfg["paths"]["downsample_factor"])
-    device = str(inference_cfg["paths"]["device"])
+    paths_cfg = inference_cfg["paths"]
+    input_dir = Path(paths_cfg["input_dir"])
+    input_file = paths_cfg.get("input_file")
+    model_pth = Path(paths_cfg["model_pth"])
+    config_yaml = Path(paths_cfg["config_yaml"])
+    downsample_factor = float(paths_cfg["downsample_factor"])
+    device = str(paths_cfg["device"])
     engine_params = inference_cfg["engine_params"]
 
     if device != "cuda":
@@ -394,15 +427,13 @@ def main() -> None:
         coarse_boundaries=True,
     )
 
-    # Find only corrected TIFFs recursively under the input directory.
-    image_paths = sorted(
-        [
-            p
-            for p in input_dir.rglob("*")
-            if p.suffix.lower() in {".tif", ".tiff"}
-            and p.name.endswith("_corrected.tif")
-        ]
-    )
+    # Resolve either one configured image or all corrected TIFFs under the input directory.
+    image_paths = resolve_inference_images(input_dir, input_file)
+    if not image_paths:
+        raise FileNotFoundError(
+            "No inference images found. Set paths.input_file or ensure input_dir "
+            "contains '*_corrected.tif' files."
+        )
 
     total = len(image_paths)
 

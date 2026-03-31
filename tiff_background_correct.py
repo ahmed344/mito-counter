@@ -115,6 +115,21 @@ def process_file(path: str, sigma: int) -> str:
     return out_path
 
 
+def resolve_target_files(input_file: Optional[str], input_root: str) -> Iterable[str]:
+    """Resolve target TIFF files from a single file or a root folder.
+
+    Args:
+        input_file (Optional[str]): Optional path to one TIFF file to process.
+        input_root (str): Root directory scanned when ``input_file`` is not provided.
+
+    Returns:
+        Iterable[str]: Iterable of TIFF file paths to process.
+    """
+    if input_file:
+        return [input_file]
+    return list(find_tiff_files(input_root))
+
+
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments.
 
@@ -124,7 +139,26 @@ def parse_args() -> argparse.Namespace:
     Returns:
         argparse.Namespace: Parsed argparse namespace.
     """
-    parser = argparse.ArgumentParser(description="Background-correct TIFF images (no denoise).")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Apply flat-field background correction to TIFF images and write outputs as "
+            "'*_corrected.tif' in the same folder."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  Process one image:\n"
+            "    python tiff_background_correct.py --input-file "
+            "/workspaces/mito-counter/data/DMD/Processed/DMD/EOM/EOM_DMD_1-1900X-0011.tif "
+            "--sigma 500\n"
+            "  Process a dataset tree:\n"
+            "    python tiff_background_correct.py --dataset dmd --dry-run\n"
+            "\n"
+            "Notes:\n"
+            "  - --input-file overrides --input-root and --dataset scanning.\n"
+            "  - --help is available as: -h or --help."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
     parser.add_argument(
         "--dataset",
         choices=sorted(DEFAULT_INPUT_ROOTS.keys()),
@@ -135,6 +169,11 @@ def parse_args() -> argparse.Namespace:
         "--input-root",
         default=None,
         help="Root folder of TIFF files. Overrides --dataset preset when provided.",
+    )
+    parser.add_argument(
+        "--input-file",
+        default=None,
+        help="Single TIFF file path to process. Overrides --input-root and --dataset scanning.",
     )
     parser.add_argument("--sigma", type=int, default=400, help="Gaussian sigma for background.")
     parser.add_argument(
@@ -160,9 +199,12 @@ def main() -> None:
     args = parse_args()
     input_root = resolve_input_root(args.input_root, args.dataset)
     # Gather all candidate input files once.
-    tiff_files = list(find_tiff_files(input_root))
+    tiff_files = list(resolve_target_files(args.input_file, input_root))
     if not tiff_files:
-        print(f"No TIFF files found under: {input_root}")
+        if args.input_file:
+            print(f"Input TIFF file not found: {args.input_file}")
+        else:
+            print(f"No TIFF files found under: {input_root}")
         return
 
     # If dry-run, just show planned outputs.

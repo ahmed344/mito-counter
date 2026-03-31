@@ -1,7 +1,10 @@
 # Paths for MitoNet inference.
 paths:
   # Root directory containing TIFF images (searched recursively).
-  input_dir: /workspaces/mito-counter/data/Calpaine_3/Processed
+  input_dir: /workspaces/mito-counter/data/DMD/Processed
+  # Optional single TIFF path to process. When set, this overrides recursive
+  # scanning under input_dir. Use null to process all *_corrected.tif files.
+  input_file: null
   # Path to the TorchScript (.pth) model file.
   model_pth: /workspaces/mito-counter/models/MitoNet_v1.pth
   # Path to the model config YAML used for norms and metadata.
