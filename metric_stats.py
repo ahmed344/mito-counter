@@ -13,22 +13,22 @@
 # ---
 
 # %% Imports and plotting configuration
-import numpy as np
-import pandas as pd
-from itertools import combinations
-from statannotations.Annotator import Annotator
-from itertools import combinations
+from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import seaborn as sns
 from scipy.stats import mannwhitneyu
 
+from stats_utils import maybe_show_current_figure, plot_metric_variants
+
 # Set the style for the plots
 sns.set_style("whitegrid")
-
 # %% Load and prepare input data
 # Read per-object morphological measurements exported by the pipeline.
 df = pd.read_csv("/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv")
+excluded_measurements = {"Connected_parts"}
 
 # Treat grouping columns as categorical to keep consistent ordering/group handling.
 df["Condition"] = df["Condition"].astype("category")
@@ -39,104 +39,21 @@ df.head()
 
 # %% Quick distribution checks
 # Metric columns start after metadata columns.
-metrics = df.columns[6:-1]
+metrics = [
+    column
+    for column in df.columns[6:]
+    if column not in excluded_measurements
+]
 
 # Count the zero values in each column
 df[metrics].isin([0]).sum()
 
 # %% Plot histograms for all numeric metrics
 # This gives a first-pass view of skew/outliers for each measurement.
-df[metrics].hist(figsize=(25, 8), bins=70, layout=(2, np.ceil(metrics.shape[0] / 2).astype(int)))
+df[metrics].hist(figsize=(25, 8), bins=70, layout=(2, np.ceil(len(metrics) / 2).astype(int)))
 plt.savefig("/workspaces/mito-counter/data/Calpaine_3/results/figures/histograms.png", dpi=900)
-plt.show()
+maybe_show_current_figure()
 # Count the zero values in each column
-
-# %% Plot helper with statistical annotations
-def plot_stat_boxplot(data, x, y, hue, unit_dict=None, test='Mann-Whitney', text_format='star', save_dir=None):
-    """Plot a grouped boxplot with statistical annotations.
-
-    Args:
-        data (pd.DataFrame): Source dataframe containing plotting columns.
-        x (str): Column name used on the x-axis.
-        y (str): Column name used as the numeric response variable.
-        hue (str): Column name used for grouping within each x category.
-        unit_dict (dict[str, str] | None): Optional mapping from metric name to display unit.
-        test (str): Statistical test name consumed by ``statannotations``.
-        text_format (str): Annotation style passed to ``statannotations``.
-        save_dir (str | None): Optional output directory where a PNG is saved.
-
-    Returns:
-        None: The function renders/saves the plot and does not return a value.
-    """
-    plot_data = data.copy()
-    plot_data[y] = pd.to_numeric(plot_data[y], errors="coerce")
-    plot_data = plot_data.dropna(subset=[x, y, hue])
-    if plot_data.empty:
-        print(f"Skipping {y}: no numeric data available after coercion.")
-        return None
-
-    plt.figure(figsize=(8, 6))
-    
-    x_order = sorted(plot_data[x].unique())
-    if hue == "Condition":
-        hue_order = sorted(
-            plot_data[hue].dropna().unique(),
-            key=lambda v: (0 if ("wildtype" in str(v).lower() or str(v).strip().lower() == "wt" or str(v).strip().lower().endswith("_wt"))
-                           else 1 if ("knockout" in str(v).lower() or str(v).strip().lower() == "ko" or str(v).strip().lower().endswith("_ko"))
-                           else 2, str(v).lower())
-        )
-    else:
-        hue_order = sorted(plot_data[hue].unique())
-    
-    # 1. Create Boxplot
-    ax = sns.boxplot(
-        data=plot_data, x=x, y=y, hue=hue,
-        order=x_order, hue_order=hue_order,
-        linewidth=1.5, 
-        palette=["tab:blue", "tab:orange"],
-        showfliers=False,
-        gap=0.2,
-        width=0.6
-    )
-    
-    # 2. Add Stats
-    box_pairs = []
-    hue_combinations = list(combinations(hue_order, 2))
-    for x_val in x_order:
-        for hue_pair in hue_combinations:
-            box_pairs.append(((x_val, hue_pair[0]), (x_val, hue_pair[1])))
-            
-    annotator = Annotator(ax, box_pairs, data=plot_data, x=x, y=y, hue=hue, 
-                          order=x_order, hue_order=hue_order)
-    annotator.configure(test=test, text_format=text_format, loc='inside', verbose=0)
-    annotator.apply_and_annotate()
-    
-    # 3. Label Formatting with Units
-    # Determine the unit string
-    unit_label = ""
-    if unit_dict and y in unit_dict:
-        raw_unit = unit_dict[y]
-        if raw_unit:
-            # Optional: Convert "um" to Greek mu for scientific notation
-            # This makes "um^2" look like actual superscript
-            formatted_unit = raw_unit.replace("um", r"$\mu m$").replace("^2", r"$^2$")
-            unit_label = f" ({formatted_unit})"
-    
-    sns.despine()
-    # Apply the formatted Y-label
-    plt.ylabel(f"{y}{unit_label}", fontsize=12)
-    plt.xlabel(x, fontsize=12)
-    
-    # Title and Legend
-    plt.title(f"{y} by {x} and {hue}", fontsize=14, pad=20)
-    plt.legend(title=hue)
-    
-    plt.tight_layout()
-
-    if save_dir:
-        plt.savefig(f'{save_dir}/{y}_by_{x}_and_{hue}.png')
-    plt.show()
-
 
 # %% Build count table (objects per image)
 # Each row in df_counts is one image-level count used for count comparisons.
@@ -150,7 +67,7 @@ df_counts.info()
 plt.figure(figsize=(20, 6))
 sns.boxplot(y="Count", x="Block", data=df_counts, hue="Muscle", gap=0.1)
 plt.savefig("/workspaces/mito-counter/data/Calpaine_3/results/figures/counts_by_block.png", dpi=900)
-plt.show()
+maybe_show_current_figure()
 
 # %% Human-readable units for y-axis labels
 units = {
@@ -164,23 +81,29 @@ units = {
     "Solidity": "",
     "NND": "um"
 }
-
 # %% Generate annotated comparison boxplots
 # All plots are saved to the same figures directory.
-save_dir = '/workspaces/mito-counter/data/Calpaine_3/results/figures'
+save_dir = Path('/workspaces/mito-counter/data/Calpaine_3/results/figures')
 
 # Plot Counts (No units needed, or you can add "objects" if you like)
-plot_stat_boxplot(df_counts, x='Muscle', y='Count', hue='Condition', save_dir=save_dir)
+plot_metric_variants(
+    data=df_counts,
+    x='Muscle',
+    y='Count',
+    hue='Condition',
+    block='Block',
+    save_dir=save_dir,
+)
 
 # Plot Morphological measurments with Units
 for measurment in metrics:
     if measurment in df.columns:
-        # Reuse one plotting helper so all outputs have identical style/stat format.
-        plot_stat_boxplot(
-            data=df, 
-            x='Muscle', 
-            y=measurment, 
+        plot_metric_variants(
+            data=df,
+            x='Muscle',
+            y=measurment,
             hue='Condition',
+            block='Block',
             unit_dict=units,
             save_dir=save_dir
         )
@@ -206,7 +129,7 @@ if len(conditions) != 2:
 # Use the same measurment set as the plotting loop, filtering to numeric columns
 measurment_cols = [
     c for c in df.columns[5:]
-    if pd.api.types.is_numeric_dtype(df[c])
+    if pd.api.types.is_numeric_dtype(df[c]) and c not in excluded_measurements
 ]
 
 results = []
