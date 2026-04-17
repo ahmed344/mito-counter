@@ -1,0 +1,988 @@
+"""Hierarchical Bayesian analysis for per-mitochondrion metrics."""
+
+from __future__ import annotations
+
+import argparse
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import arviz as az
+import numpy as np
+import pandas as pd
+import pymc as pm
+import pytensor.tensor as pt
+
+
+INPUT_CSV = Path("/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv")
+OUTPUT_CSV = Path(
+    "/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics.csv"
+)
+
+POSITIVE_METRICS = (
+    "Area",
+    "Corrected_area",
+    "Major_axis_length",
+    "Minor_axis_length",
+    "Minimum_Feret_Diameter",
+    "Elongation",
+    "NND",
+)
+BOUNDED_METRICS = (
+    "Circularity",
+    "Solidity",
+)
+GENOTYPE_ORDER = ("Wildtype", "Calpain_3_Knockout")
+SMALL_VALUE = 1e-9
+PPC_POSTERIOR_DRAWS = 200
+PPC_OBSERVATION_LIMIT = 500
+REFIT_ESS_THRESHOLD = 400.0
+
+
+@dataclass(frozen=True)
+class PreparedMetricData:
+    """Container for one metric within one muscle."""
+
+    muscle: str
+    metric: str
+    family: str
+    wt_label: str
+    ko_label: str
+    y: np.ndarray
+    observed_y: np.ndarray
+    genotype_idx_obs: np.ndarray
+    image_idx_obs: np.ndarray
+    animal_idx_image: np.ndarray
+    genotype_idx_animal: np.ndarray
+    genotype_idx_image: np.ndarray
+    animal_labels: list[str]
+    image_labels: list[str]
+    boundary_adjusted: bool
+    positive_scale: float
+    pooled_median: float
+    pooled_std: float
+    n_obs_wt: int
+    n_obs_ko: int
+    n_animals_wt: int
+    n_animals_ko: int
+    n_images_wt: int
+    n_images_ko: int
+
+
+def condition_sort_key(value: str) -> tuple[int, str]:
+    """Return a stable sort key that keeps WT-like labels before KO-like labels.
+
+    Args:
+        value (str): Raw condition label from the input dataframe.
+
+    Returns:
+        tuple[int, str]: Sort key used to order condition labels consistently.
+    """
+
+    normalized = str(value).strip().lower()
+    if "wildtype" in normalized or normalized == "wt" or normalized.endswith("_wt"):
+        return (0, normalized)
+    if "knockout" in normalized or normalized == "ko" or normalized.endswith("_ko"):
+        return (1, normalized)
+    return (2, normalized)
+
+
+def determine_condition_labels(condition_values: list[str]) -> tuple[str, str]:
+    """Determine the WT and KO labels present in the dataset.
+
+    Args:
+        condition_values (list[str]): Unique non-null condition labels.
+
+    Returns:
+        tuple[str, str]: The ordered `(wt_label, ko_label)` pair.
+    """
+
+    ordered = sorted(condition_values, key=condition_sort_key)
+    if len(ordered) != 2:
+        raise ValueError(f"Expected exactly 2 conditions, found {ordered}")
+    return ordered[0], ordered[1]
+
+
+def squeeze_beta_values(values: np.ndarray, epsilon: float = 1e-6) -> tuple[np.ndarray, bool]:
+    """Move exact boundary values into the open interval required by the Beta distribution.
+
+    Args:
+        values (np.ndarray): Observed bounded metric values.
+        epsilon (float): Small offset applied only when a value equals 0 or 1.
+
+    Returns:
+        tuple[np.ndarray, bool]: Adjusted values and whether any adjustment was applied.
+    """
+
+    adjusted = values.copy()
+    touched = False
+    zero_mask = adjusted <= 0.0
+    one_mask = adjusted >= 1.0
+    if np.any(zero_mask):
+        adjusted[zero_mask] = epsilon
+        touched = True
+    if np.any(one_mask):
+        adjusted[one_mask] = 1.0 - epsilon
+        touched = True
+    return adjusted, touched
+
+
+def prepare_metric_data(df: pd.DataFrame, muscle: str, metric: str) -> PreparedMetricData:
+    """Prepare one muscle/metric subset with integer indices for the hierarchy.
+
+    Args:
+        df (pd.DataFrame): Full cleaned measurements table.
+        muscle (str): Muscle name to analyze separately.
+        metric (str): Metric column to model.
+
+    Returns:
+        PreparedMetricData: Structured arrays and metadata for model construction.
+    """
+
+    family = "positive" if metric in POSITIVE_METRICS else "bounded"
+    wt_label, ko_label = determine_condition_labels(
+        [str(value) for value in df["Condition"].dropna().unique().tolist()]
+    )
+    df_metric = (
+        df.loc[df["Muscle"] == muscle, ["Condition", "Block", "image", "Id", metric]]
+        .copy()
+        .rename(columns={metric: "value"})
+    )
+    df_metric["value"] = pd.to_numeric(df_metric["value"], errors="coerce")
+    df_metric = df_metric.dropna(subset=["Condition", "Block", "image", "value"])
+    df_metric = df_metric.sort_values(["Condition", "Block", "image", "Id"]).reset_index(drop=True)
+
+    values = df_metric["value"].to_numpy(dtype=float)
+    boundary_adjusted = False
+    if family == "bounded":
+        values, boundary_adjusted = squeeze_beta_values(values)
+    observed_y = values.copy()
+
+    positive_scale = 1.0
+    if family == "positive":
+        positive_scale = max(float(np.median(values)), SMALL_VALUE)
+        values = values / positive_scale
+
+    df_metric["value"] = values
+
+    pooled_median = float(np.median(values))
+    pooled_std = float(np.std(values, ddof=1)) if len(values) > 1 else SMALL_VALUE
+    pooled_std = max(pooled_std, SMALL_VALUE)
+
+    genotype_map = {wt_label: 0, ko_label: 1}
+    df_metric["genotype_idx"] = df_metric["Condition"].map(genotype_map).astype(int)
+    df_metric["animal_key"] = df_metric["Condition"].astype(str) + "__" + df_metric["Block"].astype(str)
+
+    animal_table = (
+        df_metric[["animal_key", "Condition", "Block"]]
+        .drop_duplicates()
+        .sort_values(["Condition", "Block"])
+        .reset_index(drop=True)
+    )
+    animal_table["animal_idx"] = np.arange(len(animal_table), dtype=int)
+
+    image_table = (
+        df_metric[["image", "animal_key", "Condition"]]
+        .drop_duplicates()
+        .sort_values(["Condition", "animal_key", "image"])
+        .reset_index(drop=True)
+    )
+    image_table["image_idx"] = np.arange(len(image_table), dtype=int)
+
+    animal_idx_map = animal_table.set_index("animal_key")["animal_idx"].to_dict()
+    image_idx_map = image_table.set_index("image")["image_idx"].to_dict()
+
+    df_metric["animal_idx"] = df_metric["animal_key"].map(animal_idx_map).astype(int)
+    df_metric["image_idx"] = df_metric["image"].map(image_idx_map).astype(int)
+
+    image_table["animal_idx"] = image_table["animal_key"].map(animal_idx_map).astype(int)
+    animal_table["genotype_idx"] = animal_table["Condition"].map(genotype_map).astype(int)
+    image_table["genotype_idx"] = image_table["Condition"].map(genotype_map).astype(int)
+
+    return PreparedMetricData(
+        muscle=muscle,
+        metric=metric,
+        family=family,
+        wt_label=wt_label,
+        ko_label=ko_label,
+        y=df_metric["value"].to_numpy(dtype=float),
+        observed_y=observed_y,
+        genotype_idx_obs=df_metric["genotype_idx"].to_numpy(dtype=int),
+        image_idx_obs=df_metric["image_idx"].to_numpy(dtype=int),
+        animal_idx_image=image_table["animal_idx"].to_numpy(dtype=int),
+        genotype_idx_animal=animal_table["genotype_idx"].to_numpy(dtype=int),
+        genotype_idx_image=image_table["genotype_idx"].to_numpy(dtype=int),
+        animal_labels=animal_table["animal_key"].astype(str).tolist(),
+        image_labels=image_table["image"].astype(str).tolist(),
+        boundary_adjusted=boundary_adjusted,
+        positive_scale=positive_scale,
+        pooled_median=max(pooled_median, SMALL_VALUE),
+        pooled_std=pooled_std,
+        n_obs_wt=int(np.sum(df_metric["genotype_idx"] == 0)),
+        n_obs_ko=int(np.sum(df_metric["genotype_idx"] == 1)),
+        n_animals_wt=int(np.sum(animal_table["genotype_idx"] == 0)),
+        n_animals_ko=int(np.sum(animal_table["genotype_idx"] == 1)),
+        n_images_wt=int(np.sum(image_table["genotype_idx"] == 0)),
+        n_images_ko=int(np.sum(image_table["genotype_idx"] == 1)),
+    )
+
+
+def model_coords(data: PreparedMetricData) -> dict[str, list[Any] | np.ndarray]:
+    """Build coordinate labels for a PyMC model.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+
+    Returns:
+        dict[str, list[Any] | np.ndarray]: Coordinate mapping used by PyMC dims.
+    """
+
+    return {
+        "genotype": [data.wt_label, data.ko_label],
+        "animal": data.animal_labels,
+        "image": data.image_labels,
+        "obs_id": np.arange(data.y.shape[0]),
+    }
+
+
+def build_positive_model(data: PreparedMetricData) -> pm.Model:
+    """Construct the Gamma hierarchy for positive continuous metrics.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+
+    Returns:
+        pm.Model: Fully specified PyMC model on the natural response scale.
+    """
+
+    coords = model_coords(data)
+    variance_scale = max(data.pooled_std**2, SMALL_VALUE)
+    prior_sigma = max(2.0 * data.pooled_std, SMALL_VALUE)
+
+    with pm.Model(coords=coords) as model:
+        genotype_idx_obs = pm.Data("genotype_idx_obs", data.genotype_idx_obs, dims="obs_id")
+        image_idx_obs = pm.Data("image_idx_obs", data.image_idx_obs, dims="obs_id")
+        animal_idx_image = pm.Data("animal_idx_image", data.animal_idx_image, dims="image")
+        genotype_idx_animal = pm.Data(
+            "genotype_idx_animal", data.genotype_idx_animal, dims="animal"
+        )
+        genotype_idx_image = pm.Data("genotype_idx_image", data.genotype_idx_image, dims="image")
+
+        genotype_mean = pm.Gamma(
+            "genotype_mean",
+            mu=data.pooled_median,
+            sigma=prior_sigma,
+            dims="genotype",
+        )
+        animal_variance = pm.HalfNormal("animal_variance", sigma=variance_scale)
+        image_variance = pm.HalfNormal("image_variance", sigma=variance_scale, dims="genotype")
+        mito_variance = pm.HalfNormal("mito_variance", sigma=variance_scale, dims="genotype")
+
+        animal_sigma = pm.Deterministic("animal_sigma", pt.sqrt(animal_variance))
+        image_sigma = pm.Deterministic("image_sigma", pt.sqrt(image_variance), dims="genotype")
+        mito_sigma = pm.Deterministic("mito_sigma", pt.sqrt(mito_variance), dims="genotype")
+
+        animal_mean = pm.Gamma(
+            "animal_mean",
+            mu=genotype_mean[genotype_idx_animal],
+            sigma=animal_sigma,
+            dims="animal",
+        )
+        image_mean = pm.Gamma(
+            "image_mean",
+            mu=animal_mean[animal_idx_image],
+            sigma=image_sigma[genotype_idx_image],
+            dims="image",
+        )
+        pm.Gamma(
+            "observed_metric",
+            mu=image_mean[image_idx_obs],
+            sigma=mito_sigma[genotype_idx_obs],
+            observed=data.y,
+            dims="obs_id",
+        )
+
+        pm.Deterministic("delta_mean", genotype_mean[1] - genotype_mean[0])
+        pm.Deterministic("delta_image_variance", image_variance[1] - image_variance[0])
+        pm.Deterministic("delta_mito_variance", mito_variance[1] - mito_variance[0])
+
+    return model
+
+
+def build_bounded_model(data: PreparedMetricData) -> pm.Model:
+    """Construct the Beta hierarchy for bounded shape metrics.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+
+    Returns:
+        pm.Model: Fully specified PyMC model on the original bounded scale.
+    """
+
+    coords = model_coords(data)
+
+    with pm.Model(coords=coords) as model:
+        genotype_idx_obs = pm.Data("genotype_idx_obs", data.genotype_idx_obs, dims="obs_id")
+        image_idx_obs = pm.Data("image_idx_obs", data.image_idx_obs, dims="obs_id")
+        animal_idx_image = pm.Data("animal_idx_image", data.animal_idx_image, dims="image")
+        genotype_idx_animal = pm.Data(
+            "genotype_idx_animal", data.genotype_idx_animal, dims="animal"
+        )
+        genotype_idx_image = pm.Data("genotype_idx_image", data.genotype_idx_image, dims="image")
+
+        genotype_mean = pm.Beta("genotype_mean", alpha=2.0, beta=2.0, dims="genotype")
+
+        log_kappa_animal = pm.Normal("log_kappa_animal", mu=np.log(20.0), sigma=1.5)
+        log_kappa_image = pm.Normal(
+            "log_kappa_image", mu=np.log(20.0), sigma=1.5, dims="genotype"
+        )
+        log_kappa_mito = pm.Normal(
+            "log_kappa_mito", mu=np.log(20.0), sigma=1.5, dims="genotype"
+        )
+
+        kappa_animal = pm.Deterministic("kappa_animal", pt.exp(log_kappa_animal))
+        kappa_image = pm.Deterministic("kappa_image", pt.exp(log_kappa_image), dims="genotype")
+        kappa_mito = pm.Deterministic("kappa_mito", pt.exp(log_kappa_mito), dims="genotype")
+
+        animal_alpha = pt.clip(genotype_mean[genotype_idx_animal] * kappa_animal, SMALL_VALUE, np.inf)
+        animal_beta = pt.clip(
+            (1.0 - genotype_mean[genotype_idx_animal]) * kappa_animal, SMALL_VALUE, np.inf
+        )
+        animal_mean = pm.Beta("animal_mean", alpha=animal_alpha, beta=animal_beta, dims="animal")
+
+        image_parent_mean = animal_mean[animal_idx_image]
+        image_kappa = kappa_image[genotype_idx_image]
+        image_alpha = pt.clip(image_parent_mean * image_kappa, SMALL_VALUE, np.inf)
+        image_beta = pt.clip((1.0 - image_parent_mean) * image_kappa, SMALL_VALUE, np.inf)
+        image_mean = pm.Beta("image_mean", alpha=image_alpha, beta=image_beta, dims="image")
+
+        mito_parent_mean = image_mean[image_idx_obs]
+        mito_kappa = kappa_mito[genotype_idx_obs]
+        mito_alpha = pt.clip(mito_parent_mean * mito_kappa, SMALL_VALUE, np.inf)
+        mito_beta = pt.clip((1.0 - mito_parent_mean) * mito_kappa, SMALL_VALUE, np.inf)
+        pm.Beta(
+            "observed_metric",
+            alpha=mito_alpha,
+            beta=mito_beta,
+            observed=data.y,
+            dims="obs_id",
+        )
+
+        pm.Deterministic("delta_mean", genotype_mean[1] - genotype_mean[0])
+
+    return model
+
+
+def sample_model(
+    model: pm.Model,
+    draws: int,
+    tune: int,
+    chains: int,
+    cores: int,
+    target_accept: float,
+    random_seed: int,
+) -> tuple[az.InferenceData, float]:
+    """Run NUTS sampling for one fitted model.
+
+    Args:
+        model (pm.Model): PyMC model to sample.
+        draws (int): Number of posterior draws per chain.
+        tune (int): Number of warmup draws per chain.
+        chains (int): Number of MCMC chains.
+        cores (int): Number of CPU cores used by PyMC.
+        target_accept (float): NUTS target acceptance rate.
+        random_seed (int): Random seed for reproducible sampling.
+
+    Returns:
+        tuple[az.InferenceData, float]: Posterior samples and wall-clock runtime in seconds.
+    """
+
+    start = time.perf_counter()
+    with model:
+        idata = pm.sample(
+            draws=draws,
+            tune=tune,
+            chains=chains,
+            cores=cores,
+            target_accept=target_accept,
+            random_seed=random_seed,
+            return_inferencedata=True,
+            progressbar=True,
+        )
+    elapsed = time.perf_counter() - start
+    return idata, elapsed
+
+
+def flatten_draws(array: Any) -> np.ndarray:
+    """Flatten chain and draw dimensions into a single vector or matrix.
+
+    Args:
+        array (Any): Posterior array-like object from ArviZ/xarray.
+
+    Returns:
+        np.ndarray: Flattened array with samples on the first axis.
+    """
+
+    values = np.asarray(array)
+    if values.ndim == 0:
+        return values.reshape(1)
+    if values.ndim == 1:
+        return values
+    sample_count = values.shape[0] * values.shape[1]
+    return values.reshape(sample_count, *values.shape[2:])
+
+
+def probability_of_direction(draws: np.ndarray) -> float:
+    """Compute the posterior probability of direction in percent.
+
+    Args:
+        draws (np.ndarray): Posterior draws for a scalar quantity.
+
+    Returns:
+        float: `pd` expressed on the 0-100 scale.
+    """
+
+    flat = np.asarray(draws).reshape(-1)
+    return 100.0 * max(float(np.mean(flat > 0.0)), float(np.mean(flat < 0.0)))
+
+
+def summarize_scalar(draws: np.ndarray, label: str) -> dict[str, float | str]:
+    """Create numeric and formatted summaries for one posterior scalar.
+
+    Args:
+        draws (np.ndarray): Posterior draws for a scalar quantity.
+        label (str): Column prefix used in the output dataframe.
+
+    Returns:
+        dict[str, float | str]: Summary columns including estimate, HDI, pd, and text.
+    """
+
+    flat = np.asarray(draws).reshape(-1)
+    estimate = float(np.median(flat))
+    hdi_low, hdi_high = np.asarray(az.hdi(flat, hdi_prob=0.95), dtype=float)
+    pd_value = probability_of_direction(flat)
+    return {
+        label: estimate,
+        f"{label}_hdi_low": float(hdi_low),
+        f"{label}_hdi_high": float(hdi_high),
+        f"{label}_pd": pd_value,
+        f"{label}_summary": (
+            f"delta={estimate:.4g}, 95% HDI [{hdi_low:.4g},{hdi_high:.4g}], pd={pd_value:.1f}%"
+        ),
+    }
+
+
+def gamma_variance_summaries(data: PreparedMetricData, idata: az.InferenceData) -> dict[str, np.ndarray]:
+    """Extract Gamma variance-component draws from an inference dataset.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        idata (az.InferenceData): Posterior samples for a positive-metric model.
+
+    Returns:
+        dict[str, np.ndarray]: Flattened variance draws for WT, KO, and deltas.
+    """
+
+    posterior = idata.posterior
+    variance_scale = data.positive_scale**2
+    image_variance = flatten_draws(posterior["image_variance"])
+    mito_variance = flatten_draws(posterior["mito_variance"])
+    return {
+        "wt_image_variance": variance_scale * image_variance[:, 0],
+        "ko_image_variance": variance_scale * image_variance[:, 1],
+        "delta_image_variance": variance_scale * (image_variance[:, 1] - image_variance[:, 0]),
+        "wt_mito_variance": variance_scale * mito_variance[:, 0],
+        "ko_mito_variance": variance_scale * mito_variance[:, 1],
+        "delta_mito_variance": variance_scale * (mito_variance[:, 1] - mito_variance[:, 0]),
+        "animal_variance_shared": variance_scale * flatten_draws(posterior["animal_variance"]),
+    }
+
+
+def beta_variance_summaries(data: PreparedMetricData, idata: az.InferenceData) -> dict[str, np.ndarray]:
+    """Compute response-scale Beta variance summaries averaged within genotype.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        idata (az.InferenceData): Posterior samples for a bounded-metric model.
+
+    Returns:
+        dict[str, np.ndarray]: Flattened variance draws for WT, KO, and deltas.
+    """
+
+    posterior = idata.posterior
+    animal_mean = flatten_draws(posterior["animal_mean"])
+    image_mean = flatten_draws(posterior["image_mean"])
+    kappa_animal = flatten_draws(posterior["kappa_animal"])
+    kappa_image = flatten_draws(posterior["kappa_image"])
+    kappa_mito = flatten_draws(posterior["kappa_mito"])
+
+    wt_animals = data.genotype_idx_animal == 0
+    ko_animals = data.genotype_idx_animal == 1
+    wt_images = data.genotype_idx_image == 0
+    ko_images = data.genotype_idx_image == 1
+
+    animal_var_wt = np.mean(animal_mean[:, wt_animals] * (1.0 - animal_mean[:, wt_animals]), axis=1)
+    animal_var_ko = np.mean(animal_mean[:, ko_animals] * (1.0 - animal_mean[:, ko_animals]), axis=1)
+    animal_var_wt = animal_var_wt / (kappa_animal + 1.0)
+    animal_var_ko = animal_var_ko / (kappa_animal + 1.0)
+
+    image_var_wt = np.mean(animal_mean[:, wt_animals] * (1.0 - animal_mean[:, wt_animals]), axis=1)
+    image_var_ko = np.mean(animal_mean[:, ko_animals] * (1.0 - animal_mean[:, ko_animals]), axis=1)
+    image_var_wt = image_var_wt / (kappa_image[:, 0] + 1.0)
+    image_var_ko = image_var_ko / (kappa_image[:, 1] + 1.0)
+
+    mito_var_wt = np.mean(image_mean[:, wt_images] * (1.0 - image_mean[:, wt_images]), axis=1)
+    mito_var_ko = np.mean(image_mean[:, ko_images] * (1.0 - image_mean[:, ko_images]), axis=1)
+    mito_var_wt = mito_var_wt / (kappa_mito[:, 0] + 1.0)
+    mito_var_ko = mito_var_ko / (kappa_mito[:, 1] + 1.0)
+
+    return {
+        "wt_image_variance": image_var_wt,
+        "ko_image_variance": image_var_ko,
+        "delta_image_variance": image_var_ko - image_var_wt,
+        "wt_mito_variance": mito_var_wt,
+        "ko_mito_variance": mito_var_ko,
+        "delta_mito_variance": mito_var_ko - mito_var_wt,
+        "animal_variance_shared": 0.5 * (animal_var_wt + animal_var_ko),
+    }
+
+
+def posterior_diagnostics(idata: az.InferenceData, var_names: list[str]) -> dict[str, float]:
+    """Compute scalar convergence diagnostics from selected posterior variables.
+
+    Args:
+        idata (az.InferenceData): Posterior samples for one fitted model.
+        var_names (list[str]): Variable names included in the diagnostic summary.
+
+    Returns:
+        dict[str, float]: Maximum R-hat, minimum ESS values, and divergence count.
+    """
+
+    summary = az.summary(idata, var_names=var_names, round_to=None)
+    sample_stats = idata.sample_stats
+    return {
+        "rhat_max": float(summary["r_hat"].max()),
+        "ess_bulk_min": float(summary["ess_bulk"].min()),
+        "ess_tail_min": float(summary["ess_tail"].min()),
+        "divergences": int(np.asarray(sample_stats["diverging"]).sum()),
+    }
+
+
+def diagnostic_status(diagnostics: dict[str, float]) -> tuple[str, str]:
+    """Classify whether a fitted model passes basic convergence heuristics.
+
+    Args:
+        diagnostics (dict[str, float]): Scalar diagnostic summary for one fitted model.
+
+    Returns:
+        tuple[str, str]: Fit status label and a semicolon-separated warning message.
+    """
+
+    warnings: list[str] = []
+    if diagnostics["divergences"] > 0:
+        warnings.append("divergences")
+    if diagnostics["rhat_max"] > 1.01:
+        warnings.append("rhat_gt_1.01")
+    if diagnostics["ess_bulk_min"] < REFIT_ESS_THRESHOLD:
+        warnings.append("ess_bulk_lt_400")
+    if diagnostics["ess_tail_min"] < REFIT_ESS_THRESHOLD:
+        warnings.append("ess_tail_lt_400")
+    if warnings:
+        return ("warn", ";".join(warnings))
+    return ("ok", "")
+
+
+def fit_quality_key(row: dict[str, Any]) -> tuple[int, int, float, float]:
+    """Create an ordering key where smaller values correspond to better fits.
+
+    Args:
+        row (dict[str, Any]): Flat result row produced by `summarize_model`.
+
+    Returns:
+        tuple[int, int, float, float]: Ordered quality key used to compare attempts.
+    """
+
+    if row.get("fit_status") == "error":
+        return (3, int(1e9), float(1e9), float(1e9))
+    status_penalty = 0 if row.get("fit_status") == "ok" else 1
+    divergences = int(row.get("divergences", 0))
+    rhat_penalty = max(float(row.get("rhat_max", 99.0)) - 1.0, 0.0)
+    ess_penalty = -float(row.get("ess_bulk_min", 0.0))
+    return (status_penalty, divergences, rhat_penalty, ess_penalty)
+
+
+def sampling_plan(
+    draws: int,
+    tune: int,
+    target_accept: float,
+    attempt_index: int,
+    warning_message: str,
+) -> tuple[int, int, float]:
+    """Return adaptive sampling settings for a retry attempt.
+
+    Args:
+        draws (int): Current posterior draws per chain.
+        tune (int): Current warmup draws per chain.
+        target_accept (float): Current NUTS target acceptance rate.
+        attempt_index (int): Zero-based retry attempt index.
+        warning_message (str): Warning labels from the previous fit.
+
+    Returns:
+        tuple[int, int, float]: Updated `(draws, tune, target_accept)` values.
+    """
+
+    if attempt_index == 0:
+        return draws, tune, target_accept
+
+    next_draws = max(draws, 1000)
+    next_tune = max(tune, 1500)
+    next_target_accept = max(target_accept, 0.99)
+    if "divergences" in warning_message:
+        next_tune = max(next_tune, 2000)
+        next_target_accept = max(next_target_accept, 0.995)
+    if attempt_index >= 2:
+        next_draws = max(next_draws, 1500)
+        next_tune = max(next_tune, 2500)
+        next_target_accept = max(next_target_accept, 0.995)
+    return next_draws, next_tune, next_target_accept
+
+
+def compute_ppc_summary(
+    data: PreparedMetricData,
+    idata: az.InferenceData,
+    random_seed: int,
+) -> dict[str, float]:
+    """Run a lightweight posterior predictive check on a subset of observations.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        idata (az.InferenceData): Posterior samples for one fitted model.
+        random_seed (int): Random seed used for reproducible PPC subsampling.
+
+    Returns:
+        dict[str, float]: Simple predictive discrepancies for mean, sd, and quantiles.
+    """
+
+    rng = np.random.default_rng(random_seed)
+    posterior_size = idata.posterior.sizes["chain"] * idata.posterior.sizes["draw"]
+    draw_count = min(PPC_POSTERIOR_DRAWS, posterior_size)
+    obs_count = min(PPC_OBSERVATION_LIMIT, data.y.shape[0])
+
+    draw_indices = rng.choice(posterior_size, size=draw_count, replace=False)
+    obs_indices = rng.choice(data.y.shape[0], size=obs_count, replace=False)
+    observed_subset = data.observed_y[obs_indices]
+
+    image_mean = flatten_draws(idata.posterior["image_mean"])[draw_indices]
+    obs_image_idx = data.image_idx_obs[obs_indices]
+    obs_genotype_idx = data.genotype_idx_obs[obs_indices]
+    parent_mean = image_mean[:, obs_image_idx]
+
+    if data.family == "positive":
+        mito_variance = flatten_draws(idata.posterior["mito_variance"])[draw_indices]
+        obs_variance = mito_variance[:, obs_genotype_idx]
+        gamma_shape = np.square(parent_mean) / np.clip(obs_variance, SMALL_VALUE, None)
+        gamma_scale = np.clip(obs_variance, SMALL_VALUE, None) / np.clip(parent_mean, SMALL_VALUE, None)
+        predictive = data.positive_scale * rng.gamma(shape=gamma_shape, scale=gamma_scale)
+    else:
+        kappa_mito = flatten_draws(idata.posterior["kappa_mito"])[draw_indices]
+        obs_kappa = kappa_mito[:, obs_genotype_idx]
+        alpha = np.clip(parent_mean * obs_kappa, SMALL_VALUE, None)
+        beta = np.clip((1.0 - parent_mean) * obs_kappa, SMALL_VALUE, None)
+        predictive = rng.beta(alpha, beta)
+
+    predictive_flat = predictive.reshape(-1)
+    return {
+        "ppc_mean_error": float(np.mean(predictive_flat) - np.mean(observed_subset)),
+        "ppc_sd_error": float(np.std(predictive_flat, ddof=1) - np.std(observed_subset, ddof=1)),
+        "ppc_q10_error": float(np.quantile(predictive_flat, 0.10) - np.quantile(observed_subset, 0.10)),
+        "ppc_q90_error": float(np.quantile(predictive_flat, 0.90) - np.quantile(observed_subset, 0.90)),
+    }
+
+
+def summarize_model(
+    data: PreparedMetricData,
+    idata: az.InferenceData,
+    sampling_seconds: float,
+    random_seed: int,
+) -> dict[str, Any]:
+    """Convert one fitted model into a flat row for the output CSV.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        idata (az.InferenceData): Posterior samples for one fitted model.
+        sampling_seconds (float): Wall-clock runtime for posterior sampling.
+        random_seed (int): Random seed used for reproducible PPC summaries.
+
+    Returns:
+        dict[str, Any]: One tidy result row with effects, HDIs, pd, and diagnostics.
+    """
+
+    posterior = idata.posterior
+    genotype_mean = flatten_draws(posterior["genotype_mean"])
+    wt_mean = genotype_mean[:, 0]
+    ko_mean = genotype_mean[:, 1]
+
+    if data.family == "positive":
+        variance_draws = gamma_variance_summaries(data, idata)
+        diagnostic_names = [
+            "genotype_mean",
+            "animal_variance",
+            "image_variance",
+            "mito_variance",
+            "delta_mean",
+            "delta_image_variance",
+            "delta_mito_variance",
+        ]
+    else:
+        variance_draws = beta_variance_summaries(data, idata)
+        diagnostic_names = [
+            "genotype_mean",
+            "kappa_animal",
+            "kappa_image",
+            "kappa_mito",
+            "delta_mean",
+        ]
+
+    mean_scale = data.positive_scale if data.family == "positive" else 1.0
+
+    row: dict[str, Any] = {
+        "muscle": data.muscle,
+        "metric": data.metric,
+        "family": data.family,
+        "wt_label": data.wt_label,
+        "ko_label": data.ko_label,
+        "n_obs_wt": data.n_obs_wt,
+        "n_obs_ko": data.n_obs_ko,
+        "n_animals_wt": data.n_animals_wt,
+        "n_animals_ko": data.n_animals_ko,
+        "n_images_wt": data.n_images_wt,
+        "n_images_ko": data.n_images_ko,
+        "boundary_adjusted": data.boundary_adjusted,
+        "positive_scale": data.positive_scale,
+        "sampling_seconds": sampling_seconds,
+        "wt_mean": float(np.median(wt_mean) * mean_scale),
+        "ko_mean": float(np.median(ko_mean) * mean_scale),
+        "animal_variance_shared": float(np.median(variance_draws["animal_variance_shared"])),
+    }
+    row.update(summarize_scalar((ko_mean - wt_mean) * mean_scale, "delta_mean"))
+    row.update(summarize_scalar(variance_draws["delta_image_variance"], "delta_image_variance"))
+    row.update(summarize_scalar(variance_draws["delta_mito_variance"], "delta_mito_variance"))
+    row["wt_image_variance"] = float(np.median(variance_draws["wt_image_variance"]))
+    row["ko_image_variance"] = float(np.median(variance_draws["ko_image_variance"]))
+    row["wt_mito_variance"] = float(np.median(variance_draws["wt_mito_variance"]))
+    row["ko_mito_variance"] = float(np.median(variance_draws["ko_mito_variance"]))
+    diagnostics = posterior_diagnostics(idata, diagnostic_names)
+    row.update(diagnostics)
+    row.update(compute_ppc_summary(data, idata, random_seed=random_seed))
+    fit_status, warning_message = diagnostic_status(diagnostics)
+    row["fit_status"] = fit_status
+    row["warning_message"] = warning_message
+    return row
+
+
+def analyze_metric(
+    df: pd.DataFrame,
+    muscle: str,
+    metric: str,
+    draws: int,
+    tune: int,
+    chains: int,
+    cores: int,
+    target_accept: float,
+    random_seed: int,
+) -> dict[str, Any]:
+    """Fit one metric within one muscle and return a summary row.
+
+    Args:
+        df (pd.DataFrame): Full cleaned measurements table.
+        muscle (str): Muscle name to analyze.
+        metric (str): Metric column to fit.
+        draws (int): Number of posterior draws per chain.
+        tune (int): Number of warmup draws per chain.
+        chains (int): Number of MCMC chains.
+        cores (int): Number of CPU cores used by PyMC.
+        target_accept (float): NUTS target acceptance rate.
+        random_seed (int): Random seed for reproducible sampling and PPC.
+
+    Returns:
+        dict[str, Any]: One result row, including failures when fitting errors occur.
+    """
+
+    data = prepare_metric_data(df=df, muscle=muscle, metric=metric)
+    model_builder = build_positive_model if data.family == "positive" else build_bounded_model
+    attempt_rows: list[dict[str, Any]] = []
+    warning_message = ""
+
+    for attempt_index in range(3):
+        attempt_draws, attempt_tune, attempt_target_accept = sampling_plan(
+            draws=draws,
+            tune=tune,
+            target_accept=target_accept,
+            attempt_index=attempt_index,
+            warning_message=warning_message,
+        )
+        try:
+            model = model_builder(data)
+            idata, sampling_seconds = sample_model(
+                model=model,
+                draws=attempt_draws,
+                tune=attempt_tune,
+                chains=chains,
+                cores=cores,
+                target_accept=attempt_target_accept,
+                random_seed=random_seed + attempt_index,
+            )
+            row = summarize_model(
+                data=data,
+                idata=idata,
+                sampling_seconds=sampling_seconds,
+                random_seed=random_seed + attempt_index,
+            )
+            row["attempt"] = attempt_index + 1
+            row["sampling_draws"] = attempt_draws
+            row["sampling_tune"] = attempt_tune
+            row["sampling_target_accept"] = attempt_target_accept
+            attempt_rows.append(row)
+            warning_message = str(row.get("warning_message", ""))
+            if row.get("fit_status") == "ok":
+                return row
+        except Exception as exc:  # pragma: no cover - defensive reporting for long batch runs.
+            attempt_rows.append(
+                {
+                    "muscle": muscle,
+                    "metric": metric,
+                    "family": data.family,
+                    "wt_label": data.wt_label,
+                    "ko_label": data.ko_label,
+                    "n_obs_wt": data.n_obs_wt,
+                    "n_obs_ko": data.n_obs_ko,
+                    "n_animals_wt": data.n_animals_wt,
+                    "n_animals_ko": data.n_animals_ko,
+                    "n_images_wt": data.n_images_wt,
+                    "n_images_ko": data.n_images_ko,
+                    "boundary_adjusted": data.boundary_adjusted,
+                    "fit_status": "error",
+                    "error_message": str(exc),
+                    "attempt": attempt_index + 1,
+                    "sampling_draws": attempt_draws,
+                    "sampling_tune": attempt_tune,
+                    "sampling_target_accept": attempt_target_accept,
+                }
+            )
+            warning_message = "error"
+
+    return min(attempt_rows, key=fit_quality_key)
+
+
+def load_measurements(path: Path) -> pd.DataFrame:
+    """Load the cleaned measurements CSV used by both workflows.
+
+    Args:
+        path (Path): CSV path containing one mitochondrion per row.
+
+    Returns:
+        pd.DataFrame: Loaded measurements dataframe.
+    """
+
+    return pd.read_csv(path)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line options for the hierarchical analysis workflow.
+
+    Args:
+        None
+
+    Returns:
+        argparse.Namespace: Parsed command-line arguments.
+    """
+
+    parser = argparse.ArgumentParser(
+        description="Fit hierarchical Bayesian models for per-mitochondrion metrics."
+    )
+    parser.add_argument("--input", type=Path, default=INPUT_CSV)
+    parser.add_argument("--output", type=Path, default=OUTPUT_CSV)
+    parser.add_argument("--draws", type=int, default=500)
+    parser.add_argument("--tune", type=int, default=500)
+    parser.add_argument("--chains", type=int, default=4)
+    parser.add_argument("--cores", type=int, default=4)
+    parser.add_argument("--target-accept", type=float, default=0.95)
+    parser.add_argument("--seed", type=int, default=20260415)
+    parser.add_argument("--muscles", nargs="*", default=None)
+    parser.add_argument("--metrics", nargs="*", default=None)
+    return parser.parse_args()
+
+
+def selected_metrics(metric_arg: list[str] | None) -> list[str]:
+    """Resolve which metrics should be analyzed in this run.
+
+    Args:
+        metric_arg (list[str] | None): Optional metric names passed on the command line.
+
+    Returns:
+        list[str]: Ordered metric names for the batch run.
+    """
+
+    if metric_arg:
+        return metric_arg
+    return list(POSITIVE_METRICS + BOUNDED_METRICS)
+
+
+def selected_muscles(df: pd.DataFrame, muscle_arg: list[str] | None) -> list[str]:
+    """Resolve which muscles should be analyzed in this run.
+
+    Args:
+        df (pd.DataFrame): Full cleaned measurements table.
+        muscle_arg (list[str] | None): Optional muscle names passed on the command line.
+
+    Returns:
+        list[str]: Ordered muscle names for the batch run.
+    """
+
+    if muscle_arg:
+        return muscle_arg
+    return sorted(df["Muscle"].dropna().unique().tolist())
+
+
+def main() -> None:
+    """Run the full hierarchical Bayesian analysis and save a summary CSV.
+
+    Args:
+        None
+
+    Returns:
+        None
+    """
+
+    args = parse_args()
+    df = load_measurements(args.input)
+    rows: list[dict[str, Any]] = []
+    metrics = selected_metrics(args.metrics)
+    muscles = selected_muscles(df, args.muscles)
+
+    for muscle in muscles:
+        for metric_index, metric in enumerate(metrics):
+            seed = args.seed + (100 * muscles.index(muscle)) + metric_index
+            print(f"Fitting {metric} for {muscle}...")
+            row = analyze_metric(
+                df=df,
+                muscle=muscle,
+                metric=metric,
+                draws=args.draws,
+                tune=args.tune,
+                chains=args.chains,
+                cores=args.cores,
+                target_accept=args.target_accept,
+                random_seed=seed,
+            )
+            rows.append(row)
+
+    result_df = pd.DataFrame(rows).sort_values(["muscle", "metric"]).reset_index(drop=True)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    result_df.to_csv(args.output, index=False)
+    print(f"Saved results to {args.output}")
+
+
+if __name__ == "__main__":
+    main()

@@ -2,7 +2,7 @@ FROM pytorch/pytorch:2.9.1-cuda13.0-cudnn9-runtime
 
 # Install basic utilities and OpenGL runtime deps for napari/vispy
 RUN apt-get update
-RUN apt-get install -y git sudo curl libgl1-mesa-glx libgles2-mesa libegl1-mesa libx11-6 libxext6 libxrender1 libsm6 libxrandr2 libxi6 libxkbcommon-x11-0 libxcb1
+RUN apt-get install -y git sudo curl libgl1-mesa-glx libgles2-mesa libegl1-mesa libx11-6 libxext6 libxrender1 libsm6 libxrandr2 libxi6 libxkbcommon-x11-0 libxcb1 build-essential
 RUN rm -rf /var/lib/apt/lists/*
 
 # Add user so we don't need to run VS Code as root

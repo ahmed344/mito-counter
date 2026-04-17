@@ -17,3 +17,5 @@ jupyter
 ipywidgets
 jupytext
 empanada-dl --no-deps
+pymc>=5.10,<6
+arviz>=0.18
