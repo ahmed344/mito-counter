@@ -13,12 +13,14 @@ import numpy as np
 import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
+import xarray as xr
 
 
 INPUT_CSV = Path("/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv")
 OUTPUT_CSV = Path(
     "/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics.csv"
 )
+TRACE_DIR = Path("/workspaces/mito-counter/data/Calpaine_3/results/bayes_traces")
 
 POSITIVE_METRICS = (
     "Area",
@@ -68,6 +70,114 @@ class PreparedMetricData:
     n_animals_ko: int
     n_images_wt: int
     n_images_ko: int
+
+
+@dataclass
+class MetricAnalysisResult:
+    """Container for the winning fit artifacts of one muscle-metric analysis."""
+
+    row: dict[str, Any]
+    data: PreparedMetricData | None
+    idata: az.InferenceData | None
+
+
+def slugify_value(value: str) -> str:
+    """Convert a string into a filesystem-friendly lowercase slug.
+
+    Args:
+        value (str): Raw label that will become part of a filename.
+
+    Returns:
+        str: Lowercase slug containing only alphanumerics and underscores.
+    """
+
+    raw = str(value).strip().lower()
+    slug_chars = [character if character.isalnum() else "_" for character in raw]
+    slug = "".join(slug_chars)
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug.strip("_")
+
+
+def fit_stem(muscle: str, metric: str) -> str:
+    """Build a stable filename stem for one muscle-metric fit.
+
+    Args:
+        muscle (str): Muscle label for the current fit.
+        metric (str): Metric name for the current fit.
+
+    Returns:
+        str: Predictable stem combining muscle and metric slugs.
+    """
+
+    return f"{slugify_value(muscle)}__{slugify_value(metric)}"
+
+
+def trace_path_for_fit(trace_dir: Path, muscle: str, metric: str) -> Path:
+    """Return the NetCDF path used to store one fit's inference data.
+
+    Args:
+        trace_dir (Path): Root directory where Bayesian trace files are saved.
+        muscle (str): Muscle label for the current fit.
+        metric (str): Metric name for the current fit.
+
+    Returns:
+        Path: NetCDF path for the requested fit.
+    """
+
+    return trace_dir / f"{fit_stem(muscle=muscle, metric=metric)}.nc"
+
+
+def diagnostic_var_names(family: str) -> list[str]:
+    """Return the posterior variable names used for engine-check plots.
+
+    Args:
+        family (str): Metric family name, either ``positive`` or ``bounded``.
+
+    Returns:
+        list[str]: Variable names suitable for trace, rank, and forest plots.
+    """
+
+    if family == "positive":
+        return [
+            "genotype_mean",
+            "animal_variance",
+            "image_variance",
+            "mito_variance",
+            "delta_mean",
+            "delta_image_variance",
+            "delta_mito_variance",
+        ]
+    return [
+        "genotype_mean",
+        "kappa_animal",
+        "kappa_image",
+        "kappa_mito",
+        "delta_mean",
+    ]
+
+
+def biology_posterior_var_names(family: str) -> list[str]:
+    """Return response-scale effect variables used for biology-facing posterior plots.
+
+    Args:
+        family (str): Metric family name, either ``positive`` or ``bounded``.
+
+    Returns:
+        list[str]: Response-scale posterior effect variable names.
+    """
+
+    if family == "positive":
+        return [
+            "delta_mean_response",
+            "delta_image_variance_response",
+            "delta_mito_variance_response",
+        ]
+    return [
+        "delta_mean_response",
+        "delta_image_variance_response",
+        "delta_mito_variance_response",
+    ]
 
 
 def condition_sort_key(value: str) -> tuple[int, str]:
@@ -412,6 +522,159 @@ def sample_model(
         )
     elapsed = time.perf_counter() - start
     return idata, elapsed
+
+
+def attach_posterior_predictive(
+    model: pm.Model,
+    idata: az.InferenceData,
+    random_seed: int,
+) -> az.InferenceData:
+    """Sample posterior predictive draws and attach them to an inference dataset.
+
+    Args:
+        model (pm.Model): Reconstructed PyMC model matching the saved posterior draws.
+        idata (az.InferenceData): Posterior samples returned by ``pm.sample``.
+        random_seed (int): Random seed for reproducible posterior predictive simulation.
+
+    Returns:
+        az.InferenceData: Updated inference data containing a ``posterior_predictive`` group.
+    """
+
+    with model:
+        updated_idata = pm.sample_posterior_predictive(
+            idata,
+            var_names=["observed_metric"],
+            extend_inferencedata=True,
+            random_seed=random_seed,
+            progressbar=True,
+        )
+    return updated_idata
+
+
+def attach_response_scale_posterior(
+    data: PreparedMetricData,
+    idata: az.InferenceData,
+) -> az.InferenceData:
+    """Add response-scale derived posterior variables to an inference dataset.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        idata (az.InferenceData): Inference data containing posterior samples.
+
+    Returns:
+        az.InferenceData: Updated inference data with response-scale derived variables.
+    """
+
+    posterior = idata.posterior
+    genotype_coords = posterior.coords["genotype"]
+    chain_coords = posterior.coords["chain"]
+    draw_coords = posterior.coords["draw"]
+
+    response_variables: dict[str, xr.DataArray] = {}
+    if data.family == "positive":
+        mean_scale = data.positive_scale
+        variance_scale = data.positive_scale**2
+        response_variables = {
+            "genotype_mean_response": posterior["genotype_mean"] * mean_scale,
+            "delta_mean_response": posterior["delta_mean"] * mean_scale,
+            "animal_variance_shared_response": posterior["animal_variance"] * variance_scale,
+            "image_variance_response": posterior["image_variance"] * variance_scale,
+            "mito_variance_response": posterior["mito_variance"] * variance_scale,
+            "delta_image_variance_response": posterior["delta_image_variance"] * variance_scale,
+            "delta_mito_variance_response": posterior["delta_mito_variance"] * variance_scale,
+        }
+    else:
+        animal_mean = np.asarray(posterior["animal_mean"])
+        image_mean = np.asarray(posterior["image_mean"])
+        kappa_animal = np.asarray(posterior["kappa_animal"])
+        kappa_image = np.asarray(posterior["kappa_image"])
+        kappa_mito = np.asarray(posterior["kappa_mito"])
+
+        wt_animals = data.genotype_idx_animal == 0
+        ko_animals = data.genotype_idx_animal == 1
+        wt_images = data.genotype_idx_image == 0
+        ko_images = data.genotype_idx_image == 1
+
+        animal_var_wt = np.mean(animal_mean[..., wt_animals] * (1.0 - animal_mean[..., wt_animals]), axis=-1)
+        animal_var_ko = np.mean(animal_mean[..., ko_animals] * (1.0 - animal_mean[..., ko_animals]), axis=-1)
+        animal_var_wt = animal_var_wt / (kappa_animal + 1.0)
+        animal_var_ko = animal_var_ko / (kappa_animal + 1.0)
+
+        image_var_wt = np.mean(animal_mean[..., wt_animals] * (1.0 - animal_mean[..., wt_animals]), axis=-1)
+        image_var_ko = np.mean(animal_mean[..., ko_animals] * (1.0 - animal_mean[..., ko_animals]), axis=-1)
+        image_var_wt = image_var_wt / (kappa_image[..., 0] + 1.0)
+        image_var_ko = image_var_ko / (kappa_image[..., 1] + 1.0)
+
+        mito_var_wt = np.mean(image_mean[..., wt_images] * (1.0 - image_mean[..., wt_images]), axis=-1)
+        mito_var_ko = np.mean(image_mean[..., ko_images] * (1.0 - image_mean[..., ko_images]), axis=-1)
+        mito_var_wt = mito_var_wt / (kappa_mito[..., 0] + 1.0)
+        mito_var_ko = mito_var_ko / (kappa_mito[..., 1] + 1.0)
+
+        genotype_mean_response = xr.DataArray(
+            np.asarray(posterior["genotype_mean"]),
+            dims=("chain", "draw", "genotype"),
+            coords={"chain": chain_coords, "draw": draw_coords, "genotype": genotype_coords},
+        )
+        image_variance_response = xr.DataArray(
+            np.stack([image_var_wt, image_var_ko], axis=-1),
+            dims=("chain", "draw", "genotype"),
+            coords={"chain": chain_coords, "draw": draw_coords, "genotype": genotype_coords},
+        )
+        mito_variance_response = xr.DataArray(
+            np.stack([mito_var_wt, mito_var_ko], axis=-1),
+            dims=("chain", "draw", "genotype"),
+            coords={"chain": chain_coords, "draw": draw_coords, "genotype": genotype_coords},
+        )
+        response_variables = {
+            "genotype_mean_response": genotype_mean_response,
+            "delta_mean_response": posterior["delta_mean"],
+            "animal_variance_shared_response": xr.DataArray(
+                0.5 * (animal_var_wt + animal_var_ko),
+                dims=("chain", "draw"),
+                coords={"chain": chain_coords, "draw": draw_coords},
+            ),
+            "image_variance_response": image_variance_response,
+            "mito_variance_response": mito_variance_response,
+            "delta_image_variance_response": xr.DataArray(
+                image_var_ko - image_var_wt,
+                dims=("chain", "draw"),
+                coords={"chain": chain_coords, "draw": draw_coords},
+            ),
+            "delta_mito_variance_response": xr.DataArray(
+                mito_var_ko - mito_var_wt,
+                dims=("chain", "draw"),
+                coords={"chain": chain_coords, "draw": draw_coords},
+            ),
+        }
+
+    idata.posterior = posterior.assign(response_variables)
+    idata.attrs["muscle"] = data.muscle
+    idata.attrs["metric"] = data.metric
+    idata.attrs["family"] = data.family
+    idata.attrs["fit_stem"] = fit_stem(muscle=data.muscle, metric=data.metric)
+    return idata
+
+
+def save_inference_data(
+    data: PreparedMetricData,
+    idata: az.InferenceData,
+    trace_dir: Path,
+) -> Path:
+    """Persist one fit's inference data to NetCDF.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        idata (az.InferenceData): Inference data to be saved.
+        trace_dir (Path): Directory where trace files are stored.
+
+    Returns:
+        Path: Path to the saved NetCDF file.
+    """
+
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    output_path = trace_path_for_fit(trace_dir=trace_dir, muscle=data.muscle, metric=data.metric)
+    az.to_netcdf(idata, output_path)
+    return output_path
 
 
 def flatten_draws(array: Any) -> np.ndarray:
@@ -791,7 +1054,7 @@ def analyze_metric(
     cores: int,
     target_accept: float,
     random_seed: int,
-) -> dict[str, Any]:
+) -> MetricAnalysisResult:
     """Fit one metric within one muscle and return a summary row.
 
     Args:
@@ -806,12 +1069,12 @@ def analyze_metric(
         random_seed (int): Random seed for reproducible sampling and PPC.
 
     Returns:
-        dict[str, Any]: One result row, including failures when fitting errors occur.
+        MetricAnalysisResult: Winning summary row plus prepared data and posterior samples.
     """
 
     data = prepare_metric_data(df=df, muscle=muscle, metric=metric)
     model_builder = build_positive_model if data.family == "positive" else build_bounded_model
-    attempt_rows: list[dict[str, Any]] = []
+    attempt_results: list[MetricAnalysisResult] = []
     warning_message = ""
 
     for attempt_index in range(3):
@@ -843,36 +1106,42 @@ def analyze_metric(
             row["sampling_draws"] = attempt_draws
             row["sampling_tune"] = attempt_tune
             row["sampling_target_accept"] = attempt_target_accept
-            attempt_rows.append(row)
+            attempt_result = MetricAnalysisResult(row=row, data=data, idata=idata)
+            attempt_results.append(attempt_result)
             warning_message = str(row.get("warning_message", ""))
             if row.get("fit_status") == "ok":
-                return row
+                return attempt_result
         except Exception as exc:  # pragma: no cover - defensive reporting for long batch runs.
-            attempt_rows.append(
-                {
-                    "muscle": muscle,
-                    "metric": metric,
-                    "family": data.family,
-                    "wt_label": data.wt_label,
-                    "ko_label": data.ko_label,
-                    "n_obs_wt": data.n_obs_wt,
-                    "n_obs_ko": data.n_obs_ko,
-                    "n_animals_wt": data.n_animals_wt,
-                    "n_animals_ko": data.n_animals_ko,
-                    "n_images_wt": data.n_images_wt,
-                    "n_images_ko": data.n_images_ko,
-                    "boundary_adjusted": data.boundary_adjusted,
-                    "fit_status": "error",
-                    "error_message": str(exc),
-                    "attempt": attempt_index + 1,
-                    "sampling_draws": attempt_draws,
-                    "sampling_tune": attempt_tune,
-                    "sampling_target_accept": attempt_target_accept,
-                }
+            error_row = {
+                "muscle": muscle,
+                "metric": metric,
+                "family": data.family,
+                "wt_label": data.wt_label,
+                "ko_label": data.ko_label,
+                "n_obs_wt": data.n_obs_wt,
+                "n_obs_ko": data.n_obs_ko,
+                "n_animals_wt": data.n_animals_wt,
+                "n_animals_ko": data.n_animals_ko,
+                "n_images_wt": data.n_images_wt,
+                "n_images_ko": data.n_images_ko,
+                "boundary_adjusted": data.boundary_adjusted,
+                "fit_status": "error",
+                "error_message": str(exc),
+                "attempt": attempt_index + 1,
+                "sampling_draws": attempt_draws,
+                "sampling_tune": attempt_tune,
+                "sampling_target_accept": attempt_target_accept,
+            }
+            attempt_results.append(
+                MetricAnalysisResult(
+                    row=error_row,
+                    data=data,
+                    idata=None,
+                )
             )
             warning_message = "error"
 
-    return min(attempt_rows, key=fit_quality_key)
+    return min(attempt_results, key=lambda result: fit_quality_key(result.row))
 
 
 def load_measurements(path: Path) -> pd.DataFrame:
@@ -911,6 +1180,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260415)
     parser.add_argument("--muscles", nargs="*", default=None)
     parser.add_argument("--metrics", nargs="*", default=None)
+    parser.add_argument("--trace-dir", type=Path, default=TRACE_DIR)
+    parser.add_argument("--no-save-idata", action="store_true")
     return parser.parse_args()
 
 
@@ -945,6 +1216,39 @@ def selected_muscles(df: pd.DataFrame, muscle_arg: list[str] | None) -> list[str
     return sorted(df["Muscle"].dropna().unique().tolist())
 
 
+def finalize_fit_artifacts(
+    result: MetricAnalysisResult,
+    trace_dir: Path | None,
+    random_seed: int,
+) -> MetricAnalysisResult:
+    """Attach PPC draws, add response-scale variables, and optionally save traces.
+
+    Args:
+        result (MetricAnalysisResult): Winning fit result for one muscle-metric pair.
+        trace_dir (Path | None): Optional directory where NetCDF traces are written.
+        random_seed (int): Random seed for reproducible posterior predictive simulation.
+
+    Returns:
+        MetricAnalysisResult: Updated result row and inference data after finalization.
+    """
+
+    row = result.row
+    row["trace_path"] = ""
+    if result.data is None or result.idata is None:
+        return result
+
+    model_builder = build_positive_model if result.data.family == "positive" else build_bounded_model
+    model = model_builder(result.data)
+    idata = attach_posterior_predictive(model=model, idata=result.idata, random_seed=random_seed)
+    idata = attach_response_scale_posterior(data=result.data, idata=idata)
+
+    if trace_dir is not None:
+        output_path = save_inference_data(data=result.data, idata=idata, trace_dir=trace_dir)
+        row["trace_path"] = str(output_path)
+
+    return MetricAnalysisResult(row=row, data=result.data, idata=idata)
+
+
 def main() -> None:
     """Run the full hierarchical Bayesian analysis and save a summary CSV.
 
@@ -965,7 +1269,7 @@ def main() -> None:
         for metric_index, metric in enumerate(metrics):
             seed = args.seed + (100 * muscles.index(muscle)) + metric_index
             print(f"Fitting {metric} for {muscle}...")
-            row = analyze_metric(
+            result = analyze_metric(
                 df=df,
                 muscle=muscle,
                 metric=metric,
@@ -976,7 +1280,12 @@ def main() -> None:
                 target_accept=args.target_accept,
                 random_seed=seed,
             )
-            rows.append(row)
+            finalized_result = finalize_fit_artifacts(
+                result=result,
+                trace_dir=None if args.no_save_idata else args.trace_dir,
+                random_seed=seed + 10_000,
+            )
+            rows.append(finalized_result.row)
 
     result_df = pd.DataFrame(rows).sort_values(["muscle", "metric"]).reset_index(drop=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)

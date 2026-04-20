@@ -148,7 +148,7 @@ def format_unit_label(metric_name, unit_dict):
     return f" ({formatted_unit})"
 
 
-def build_output_path(y, x, hue, save_dir, suffix):
+def build_output_path(y, x, hue, save_dir, suffix, filename_prefix=None):
     """Construct a figure output path for a plot type.
 
     Args:
@@ -157,6 +157,7 @@ def build_output_path(y, x, hue, save_dir, suffix):
         hue (str): Column name used for grouped categories.
         save_dir (str | Path | None): Directory where figures are written.
         suffix (str): Plot-type suffix appended to the filename.
+        filename_prefix (str | None): Optional prefix used as the full filename stem before suffix.
 
     Returns:
         Path | None: Output path when ``save_dir`` is provided, otherwise ``None``.
@@ -166,11 +167,14 @@ def build_output_path(y, x, hue, save_dir, suffix):
 
     directory_by_suffix = {
         "boxplot": "box_plots",
-        "superviolin": "super_violin",
-        "superbeeswarm": "super_beeswarm",
+        "superviolin": "",
+        "superbeeswarm": "",
     }
     output_dir = Path(save_dir) / directory_by_suffix.get(suffix, "")
     output_dir.mkdir(parents=True, exist_ok=True)
+    if filename_prefix is not None:
+        sanitized_prefix = str(filename_prefix).strip().replace("/", "_").replace(" ", "_")
+        return output_dir / f"{sanitized_prefix}{suffix}.png"
     safe_parts = [str(part).replace("/", "_").replace(" ", "_") for part in (y, x, hue, suffix)]
     return output_dir / f"{safe_parts[0]}_by_{safe_parts[1]}_and_{safe_parts[2]}_{safe_parts[3]}.png"
 
@@ -505,11 +509,12 @@ def finalize_superplot(ax, y, x, tick_positions, tick_labels, unit_dict, block_p
         None: The function formats and optionally saves the current figure.
     """
     ax.set_xticks(tick_positions)
-    ax.set_xticklabels(tick_labels)
+    ax.set_xticklabels(tick_labels, rotation=20, ha="right")
     ax.set_xlabel(x, fontsize=12)
     ax.set_ylabel(f"{y}{format_unit_label(y, unit_dict)}", fontsize=12)
-    ax.set_title(title, fontsize=14, pad=20)
+    ax.set_title(title, fontsize=14, pad=24)
     apply_robust_y_limits(ax=ax, values=y_values)
+    ax.grid(axis="y", alpha=0.22, linestyle="--")
     if block_palette:
         handles = [
             plt.Line2D(
@@ -528,7 +533,7 @@ def finalize_superplot(ax, y, x, tick_positions, tick_labels, unit_dict, block_p
         ax.legend(handles=handles, frameon=True)
 
     sns.despine(ax=ax)
-    plt.tight_layout()
+    plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
     if output_path is not None:
         plt.savefig(output_path, dpi=300)
     maybe_show_current_figure()
@@ -609,7 +614,17 @@ def plot_stat_boxplot(data, x, y, hue, unit_dict=None, test="Mann-Whitney", text
     return None
 
 
-def plot_super_violin(data, x, y, hue, block, unit_dict=None, save_dir=None):
+def plot_super_violin(
+    data,
+    x,
+    y,
+    hue,
+    block,
+    unit_dict=None,
+    save_dir=None,
+    title_override=None,
+    filename_prefix=None,
+):
     """Plot a block-striped violin superplot with replicate summaries.
 
     Args:
@@ -620,6 +635,8 @@ def plot_super_violin(data, x, y, hue, block, unit_dict=None, save_dir=None):
         block (str): Column name identifying replicate blocks.
         unit_dict (dict[str, str] | None): Optional mapping from metric name to display unit.
         save_dir (str | Path | None): Optional output directory where a PNG is saved.
+        title_override (str | None): Optional custom title replacing the default title text.
+        filename_prefix (str | None): Optional prefix used as the output filename stem.
 
     Returns:
         None: The function renders/saves the plot and does not return a value.
@@ -756,7 +773,14 @@ def plot_super_violin(data, x, y, hue, block, unit_dict=None, save_dir=None):
         tick_positions.append(center)
         tick_labels.append(f"{x_value}\n{hue_value}")
 
-    output_path = build_output_path(y=y, x=x, hue=hue, save_dir=save_dir, suffix="superviolin")
+    output_path = build_output_path(
+        y=y,
+        x=x,
+        hue=hue,
+        save_dir=save_dir,
+        suffix="superviolin",
+        filename_prefix=filename_prefix,
+    )
     finalize_superplot(
         ax=ax,
         y=y,
@@ -766,14 +790,24 @@ def plot_super_violin(data, x, y, hue, block, unit_dict=None, save_dir=None):
         unit_dict=unit_dict,
         block_palette=block_palette,
         block_legend_labels=block_legend_labels,
-        title=f"{y} superviolin by {x} and {hue}",
+        title=title_override if title_override is not None else f"{y} superviolin by {x} and {hue}",
         output_path=output_path,
         y_values=plot_data[y].to_numpy(dtype=float),
     )
     return None
 
 
-def plot_super_beeswarm(data, x, y, hue, block, unit_dict=None, save_dir=None):
+def plot_super_beeswarm(
+    data,
+    x,
+    y,
+    hue,
+    block,
+    unit_dict=None,
+    save_dir=None,
+    title_override=None,
+    filename_prefix=None,
+):
     """Plot a block-colored beeswarm superplot shaped by pooled density.
 
     Args:
@@ -784,6 +818,8 @@ def plot_super_beeswarm(data, x, y, hue, block, unit_dict=None, save_dir=None):
         block (str): Column name identifying replicate blocks.
         unit_dict (dict[str, str] | None): Optional mapping from metric name to display unit.
         save_dir (str | Path | None): Optional output directory where a PNG is saved.
+        title_override (str | None): Optional custom title replacing the default title text.
+        filename_prefix (str | None): Optional prefix used as the output filename stem.
 
     Returns:
         None: The function renders/saves the plot and does not return a value.
@@ -900,7 +936,14 @@ def plot_super_beeswarm(data, x, y, hue, block, unit_dict=None, save_dir=None):
         tick_positions.append(center)
         tick_labels.append(f"{x_value}\n{hue_value}")
 
-    output_path = build_output_path(y=y, x=x, hue=hue, save_dir=save_dir, suffix="superbeeswarm")
+    output_path = build_output_path(
+        y=y,
+        x=x,
+        hue=hue,
+        save_dir=save_dir,
+        suffix="superbeeswarm",
+        filename_prefix=filename_prefix,
+    )
     finalize_superplot(
         ax=ax,
         y=y,
@@ -910,7 +953,7 @@ def plot_super_beeswarm(data, x, y, hue, block, unit_dict=None, save_dir=None):
         unit_dict=unit_dict,
         block_palette=block_palette,
         block_legend_labels=block_legend_labels,
-        title=f"{y} superbeeswarm by {x} and {hue}",
+        title=title_override if title_override is not None else f"{y} superbeeswarm by {x} and {hue}",
         output_path=output_path,
         y_values=plot_data[y].to_numpy(dtype=float),
     )
