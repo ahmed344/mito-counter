@@ -18,10 +18,20 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
+from hierarchical_bayes_config import (
+    BayesFitConfig,
+    DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH,
+    fit_config_for_pair,
+    load_hierarchical_bayes_config,
+    repeated_fit_configs,
+    validate_config_muscles,
+)
 from hierarchical_bayes_metrics import (
-    INPUT_CSV,
-    OUTPUT_CSV,
-    TRACE_DIR,
+    BOUNDED_LIKELIHOODS,
+    BOUNDED_METRICS,
+    POSITIVE_LIKELIHOODS,
+    POSITIVE_METRICS,
+    PreparedMetricData,
     attach_response_scale_posterior,
     biology_posterior_var_names,
     diagnostic_var_names,
@@ -32,7 +42,6 @@ from hierarchical_bayes_metrics import (
 from stats_utils import plot_super_beeswarm, plot_super_violin
 
 
-FIGURE_ROOT = Path("/workspaces/mito-counter/data/Calpaine_3/results/figures/bayesian")
 BAYES_SCRIPT_PATH = Path("/workspaces/mito-counter/hierarchical_bayes_metrics.py")
 QUANTILE_LEVELS = (0.10, 0.50, 0.90)
 GRID_ALPHA = 0.22
@@ -73,20 +82,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate Bayesian diagnostics, PPCs, and biology-facing figures."
     )
-    parser.add_argument("--input", type=Path, default=INPUT_CSV)
-    parser.add_argument("--summary", type=Path, default=OUTPUT_CSV)
-    parser.add_argument("--trace-dir", type=Path, default=TRACE_DIR)
-    parser.add_argument("--figure-root", type=Path, default=FIGURE_ROOT)
-    parser.add_argument("--muscles", nargs="*", default=None)
-    parser.add_argument("--metrics", nargs="*", default=None)
-    parser.add_argument("--refit-first", action="store_true")
-    parser.add_argument("--rerun-missing", action="store_true")
-    parser.add_argument("--draws", type=int, default=500)
-    parser.add_argument("--tune", type=int, default=500)
-    parser.add_argument("--chains", type=int, default=4)
-    parser.add_argument("--cores", type=int, default=4)
-    parser.add_argument("--target-accept", type=float, default=0.95)
-    parser.add_argument("--seed", type=int, default=20260415)
+    parser.add_argument("--config", type=Path, default=DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH)
     return parser.parse_args()
 
 
@@ -103,28 +99,25 @@ def load_summary(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def filter_summary(
+def filter_summary_to_fit_pairs(
     summary_df: pd.DataFrame,
-    muscles: list[str] | None,
-    metrics: list[str] | None,
+    fit_configs: list[BayesFitConfig],
 ) -> pd.DataFrame:
-    """Filter the summary table to the requested muscles and metrics.
+    """Filter the summary table to the configured rerun fits.
 
     Args:
         summary_df (pd.DataFrame): Full Bayesian summary table.
-        muscles (list[str] | None): Optional muscle names to keep.
-        metrics (list[str] | None): Optional metric names to keep.
+        fit_configs (list[BayesFitConfig]): Configured fit entries to keep.
 
     Returns:
         pd.DataFrame: Filtered summary table in original row order.
     """
 
-    filtered = summary_df.copy()
-    if muscles:
-        filtered = filtered.loc[filtered["muscle"].isin(muscles)]
-    if metrics:
-        filtered = filtered.loc[filtered["metric"].isin(metrics)]
-    return filtered.reset_index(drop=True)
+    fit_pairs = {(fit_config.muscle, fit_config.metric) for fit_config in fit_configs}
+    filtered = summary_df.loc[
+        summary_df.apply(lambda row: (row["muscle"], row["metric"]) in fit_pairs, axis=1)
+    ].copy()
+    return filtered.sort_values(["muscle", "metric"]).reset_index(drop=True)
 
 
 def resolve_trace_path(row: pd.Series, trace_dir: Path) -> Path:
@@ -236,11 +229,11 @@ def finalize_figure_layout(
     fig.subplots_adjust(top=title_top, hspace=hspace, wspace=wspace)
 
 
-def rerun_bayesian_fits(args: argparse.Namespace) -> None:
+def rerun_bayesian_fits(config_path: Path) -> None:
     """Invoke the Bayesian fitting workflow to refresh traces and summary rows.
 
     Args:
-        args (argparse.Namespace): Parsed visualization CLI arguments.
+        config_path (Path): YAML configuration path shared with the metrics workflow.
 
     Returns:
         None
@@ -249,29 +242,9 @@ def rerun_bayesian_fits(args: argparse.Namespace) -> None:
     command = [
         sys.executable,
         str(BAYES_SCRIPT_PATH),
-        "--input",
-        str(args.input),
-        "--output",
-        str(args.summary),
-        "--trace-dir",
-        str(args.trace_dir),
-        "--draws",
-        str(args.draws),
-        "--tune",
-        str(args.tune),
-        "--chains",
-        str(args.chains),
-        "--cores",
-        str(args.cores),
-        "--target-accept",
-        str(args.target_accept),
-        "--seed",
-        str(args.seed),
+        "--config",
+        str(config_path),
     ]
-    if args.muscles:
-        command.extend(["--muscles", *args.muscles])
-    if args.metrics:
-        command.extend(["--metrics", *args.metrics])
     subprocess.run(command, check=True)
 
 
@@ -292,54 +265,233 @@ def traces_missing(summary_df: pd.DataFrame, trace_dir: Path) -> bool:
     return False
 
 
-def maybe_refresh_fits(args: argparse.Namespace, summary_df: pd.DataFrame) -> pd.DataFrame:
-    """Optionally rerun Bayesian fitting before visualization generation.
+def load_or_refresh_summary(
+    summary_path: Path,
+    trace_dir: Path,
+    refresh_mode: str,
+    config_path: Path,
+    fit_configs: list[BayesFitConfig],
+) -> pd.DataFrame:
+    """Load the configured summary table and optionally refresh fits first.
 
     Args:
-        args (argparse.Namespace): Parsed visualization CLI arguments.
-        summary_df (pd.DataFrame): Current filtered summary table.
+        summary_path (Path): Summary CSV path produced by the metrics workflow.
+        trace_dir (Path): Default trace directory used when the CSV lacks a path.
+        refresh_mode (str): Visualization refresh mode from the YAML config.
+        config_path (Path): YAML configuration path shared with the metrics workflow.
+        fit_configs (list[BayesFitConfig]): Configured fit entries that should be visualized.
 
     Returns:
-        pd.DataFrame: Refreshed filtered summary table after any rerun step.
+        pd.DataFrame: Filtered summary table after any requested rerun step.
     """
 
-    should_refit = args.refit_first or (args.rerun_missing and traces_missing(summary_df, args.trace_dir))
-    if not should_refit:
-        return summary_df
-    rerun_bayesian_fits(args=args)
-    refreshed_summary = load_summary(args.summary)
-    return filter_summary(
-        summary_df=refreshed_summary,
-        muscles=args.muscles,
-        metrics=args.metrics,
+    if refresh_mode == "refit_first":
+        rerun_bayesian_fits(config_path=config_path)
+    elif refresh_mode == "rerun_missing_traces":
+        if not summary_path.exists():
+            rerun_bayesian_fits(config_path=config_path)
+        else:
+            current_summary = filter_summary_to_fit_pairs(
+                summary_df=load_summary(summary_path),
+                fit_configs=fit_configs,
+            )
+            if traces_missing(summary_df=current_summary, trace_dir=trace_dir):
+                rerun_bayesian_fits(config_path=config_path)
+    elif refresh_mode != "never":
+        raise ValueError(f"Unsupported visualization refresh mode: {refresh_mode}")
+    if not summary_path.exists():
+        raise FileNotFoundError(f"Missing summary CSV: {summary_path}")
+    refreshed_summary = load_summary(summary_path)
+    filtered_summary = filter_summary_to_fit_pairs(summary_df=refreshed_summary, fit_configs=fit_configs)
+    if filtered_summary.empty:
+        raise ValueError("Configured fits were not found in the summary CSV.")
+    return filtered_summary
+
+
+def resolved_likelihood_name(row: pd.Series, fit_config: BayesFitConfig) -> str:
+    """Resolve the concrete likelihood name stored for one summary row.
+
+    Args:
+        row (pd.Series): Summary row describing one muscle-metric fit.
+        fit_config (BayesFitConfig): Configured fit entry for the same muscle-metric pair.
+
+    Returns:
+        str: Concrete likelihood name used to fit the row.
+    """
+
+    likelihood_name = str(row.get("likelihood_name", "")).strip()
+    if likelihood_name:
+        return likelihood_name
+    return fit_config.likelihood
+
+
+def prepare_data_for_row(
+    row: pd.Series,
+    measurements_df: pd.DataFrame,
+    fit_config: BayesFitConfig,
+) -> PreparedMetricData:
+    """Rebuild prepared arrays for one summary row using its stored likelihood choice.
+
+    Args:
+        row (pd.Series): Summary row describing one muscle-metric fit.
+        measurements_df (pd.DataFrame): Full cleaned measurements table.
+        fit_config (BayesFitConfig): Configured fit entry for the same muscle-metric pair.
+
+    Returns:
+        PreparedMetricData: Prepared arrays matching the stored fit configuration.
+    """
+
+    likelihood_name = resolved_likelihood_name(row=row, fit_config=fit_config)
+    positive_likelihood = likelihood_name if str(row["family"]) == "positive" else POSITIVE_LIKELIHOODS[0]
+    bounded_likelihood = likelihood_name if str(row["family"]) == "bounded" else BOUNDED_LIKELIHOODS[1]
+    return prepare_metric_data(
+        df=measurements_df,
+        muscle=str(row["muscle"]),
+        metric=str(row["metric"]),
+        positive_likelihood=positive_likelihood,
+        bounded_likelihood=bounded_likelihood,
     )
 
 
 def ensure_augmented_idata(
-    row: pd.Series,
-    measurements_df: pd.DataFrame,
+    prepared: PreparedMetricData,
     idata: az.InferenceData,
 ) -> az.InferenceData:
     """Ensure a loaded inference dataset contains response-scale derived variables.
 
     Args:
-        row (pd.Series): Summary row describing one muscle-metric fit.
-        measurements_df (pd.DataFrame): Full cleaned measurements table.
+        prepared (PreparedMetricData): Prepared metric-specific arrays matching the fitted model.
         idata (az.InferenceData): Loaded inference data for the current fit.
 
     Returns:
         az.InferenceData: Inference data guaranteed to include response-scale variables.
     """
 
-    required_variables = biology_posterior_var_names(family=str(row["family"]))
+    required_variables = biology_posterior_var_names(family=prepared.family)
     if all(variable in idata.posterior.data_vars for variable in required_variables):
         return idata
-    prepared = prepare_metric_data(
-        df=measurements_df,
-        muscle=str(row["muscle"]),
-        metric=str(row["metric"]),
-    )
     return attach_response_scale_posterior(data=prepared, idata=idata)
+
+
+def metric_axis_label(metric: str) -> str:
+    """Build a human-readable axis label for one metric.
+
+    Args:
+        metric (str): Metric name used in the measurements table.
+
+    Returns:
+        str: Axis label including units when they are known.
+    """
+
+    unit = str(METRIC_UNITS.get(metric, "")).strip()
+    return f"{metric} ({unit})" if unit else metric
+
+
+def ppc_arrays_on_response_scale(
+    idata: az.InferenceData,
+    prepared: PreparedMetricData,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return observed and predictive PPC arrays on the original response scale.
+
+    Args:
+        idata (az.InferenceData): Inference data containing posterior predictive draws.
+        prepared (PreparedMetricData): Prepared metric-specific arrays matching the fit.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Observed vector and predictive matrix on the response scale.
+    """
+
+    observed = np.asarray(prepared.observed_y, dtype=float)
+    predictive = np.asarray(idata.posterior_predictive["observed_metric"], dtype=float)
+    predictive_samples = predictive.reshape(predictive.shape[0] * predictive.shape[1], predictive.shape[2])
+    if prepared.family == "positive":
+        predictive_samples = predictive_samples * prepared.positive_scale
+    return observed, predictive_samples
+
+
+def histogram_bin_edges(observed: np.ndarray, predictive_samples: np.ndarray) -> np.ndarray:
+    """Compute stable histogram edges shared by observed and predictive PPC arrays.
+
+    Args:
+        observed (np.ndarray): Observed response-scale values.
+        predictive_samples (np.ndarray): Predictive draws on the response scale.
+
+    Returns:
+        np.ndarray: Monotonic bin edges suitable for density overlays.
+    """
+
+    predictive_subset = predictive_samples[: min(25, predictive_samples.shape[0])].reshape(-1)
+    combined = np.concatenate([observed.reshape(-1), predictive_subset])
+    finite = combined[np.isfinite(combined)]
+    if finite.size == 0:
+        return np.linspace(0.0, 1.0, 20)
+    lower = float(np.min(finite))
+    upper = float(np.max(finite))
+    if np.isclose(lower, upper):
+        padding = max(abs(lower) * 0.05, 0.05)
+        return np.linspace(lower - padding, upper + padding, 20)
+    edges = np.histogram_bin_edges(finite, bins="fd")
+    if edges.size < 12:
+        edges = np.linspace(lower, upper, 20)
+    if edges.size > 60:
+        edges = np.linspace(lower, upper, 60)
+    return np.asarray(edges, dtype=float)
+
+
+def animal_display_label(animal_label: str) -> str:
+    """Shorten a condition-prefixed animal label for figure x-axis display.
+
+    Args:
+        animal_label (str): Prepared animal label in `Condition__Block` form.
+
+    Returns:
+        str: Display label emphasizing the block identifier.
+    """
+
+    parts = str(animal_label).split("__", maxsplit=1)
+    return parts[-1] if len(parts) == 2 else str(animal_label)
+
+
+def plot_density_overlay(
+    ax: plt.Axes,
+    observed: np.ndarray,
+    predictive_samples: np.ndarray,
+    title: str,
+    rng: np.random.Generator,
+) -> None:
+    """Draw one observed-vs-predictive density-style overlay on a Matplotlib axis.
+
+    Args:
+        ax (plt.Axes): Matplotlib axis receiving the overlay.
+        observed (np.ndarray): Observed response-scale values for one subset.
+        predictive_samples (np.ndarray): Predictive draws on the response scale.
+        title (str): Axis title for the current subset.
+        rng (np.random.Generator): Random number generator used to subsample predictive draws.
+
+    Returns:
+        None
+    """
+
+    if observed.size == 0:
+        ax.set_title(f"{title} (no observations)")
+        return
+    edges = histogram_bin_edges(observed=observed, predictive_samples=predictive_samples)
+    centers = 0.5 * (edges[1:] + edges[:-1])
+    observed_density, _ = np.histogram(observed, bins=edges, density=True)
+    predictive_count = min(40, predictive_samples.shape[0])
+    draw_indices = rng.choice(predictive_samples.shape[0], size=predictive_count, replace=False)
+    predictive_densities = np.asarray(
+        [
+            np.histogram(predictive_samples[index], bins=edges, density=True)[0]
+            for index in draw_indices
+        ],
+        dtype=float,
+    )
+    for predictive_density in predictive_densities:
+        ax.step(centers, predictive_density, where="mid", color="tab:blue", alpha=0.08, linewidth=1.0)
+    ax.step(centers, np.median(predictive_densities, axis=0), where="mid", color="tab:blue", linewidth=2.0)
+    ax.step(centers, observed_density, where="mid", color="black", linewidth=2.0)
+    ax.set_title(title, pad=10)
 
 
 def fit_output_dir(root: Path, category: str, row: pd.Series) -> Path:
@@ -807,6 +959,7 @@ def plot_energy_figure(
 def plot_ppc_density(
     idata: az.InferenceData,
     row: pd.Series,
+    prepared: PreparedMetricData,
     output_dir: Path,
     output_prefix: str,
 ) -> None:
@@ -815,6 +968,7 @@ def plot_ppc_density(
     Args:
         idata (az.InferenceData): Inference data containing posterior predictive draws.
         row (pd.Series): Summary row describing the fit.
+        prepared (PreparedMetricData): Prepared metric-specific arrays matching the fit.
         output_dir (Path): Directory where the PPC density plot should be saved.
         output_prefix (str): Prefix prepended to the saved filename.
 
@@ -822,25 +976,95 @@ def plot_ppc_density(
         None
     """
 
-    axes = az.plot_ppc(
-        idata,
-        var_names=["observed_metric"],
-        data_pairs={"observed_metric": "observed_metric"},
-        num_pp_samples=100,
-        random_seed=20260415,
-        figsize=(10, 6),
-        show=False,
+    observed, predictive_samples = ppc_arrays_on_response_scale(idata=idata, prepared=prepared)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    plot_density_overlay(
+        ax=ax,
+        observed=observed,
+        predictive_samples=predictive_samples,
+        title="All observations",
+        rng=np.random.default_rng(20260415),
     )
-    fig = axes_to_figure(axes)
+    ax.set_xlabel(metric_axis_label(str(row["metric"])))
+    ax.set_ylabel("Density")
+    ax.legend(
+        handles=[
+            matplotlib.lines.Line2D([0], [0], color="black", linewidth=2.0, label="Observed"),
+            matplotlib.lines.Line2D(
+                [0],
+                [0],
+                color="tab:blue",
+                linewidth=2.0,
+                label="Posterior predictive median",
+            ),
+        ],
+        frameon=True,
+    )
     style_figure_axes(fig=fig, grid_axis="both", xtick_rotation=0)
     fig.suptitle(f"{fit_title(row)} - Posterior predictive density", y=0.99, fontsize=14)
     finalize_figure_layout(fig=fig, title_top=0.9)
     save_figure(fig=fig, output_path=output_dir / f"{output_prefix}ppc_density.png")
 
 
+def plot_ppc_density_by_condition(
+    idata: az.InferenceData,
+    row: pd.Series,
+    prepared: PreparedMetricData,
+    output_dir: Path,
+    output_prefix: str,
+) -> None:
+    """Generate stratified PPC density overlays split by genotype condition.
+
+    Args:
+        idata (az.InferenceData): Inference data containing posterior predictive draws.
+        row (pd.Series): Summary row describing the fit.
+        prepared (PreparedMetricData): Prepared metric-specific arrays matching the fit.
+        output_dir (Path): Directory where the stratified PPC plot should be saved.
+        output_prefix (str): Prefix prepended to the saved filename.
+
+    Returns:
+        None
+    """
+
+    observed, predictive_samples = ppc_arrays_on_response_scale(idata=idata, prepared=prepared)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    rng = np.random.default_rng(20260416)
+    genotype_labels = ((0, prepared.wt_label), (1, prepared.ko_label))
+    for ax, (genotype_value, label) in zip(np.atleast_1d(axes), genotype_labels):
+        mask = prepared.genotype_idx_obs == genotype_value
+        plot_density_overlay(
+            ax=ax,
+            observed=observed[mask],
+            predictive_samples=predictive_samples[:, mask],
+            title=label,
+            rng=rng,
+        )
+        ax.set_xlabel(metric_axis_label(str(row["metric"])))
+    np.atleast_1d(axes)[0].set_ylabel("Density")
+    axes_array = np.atleast_1d(axes)
+    axes_array[0].legend(
+        handles=[
+            matplotlib.lines.Line2D([0], [0], color="black", linewidth=2.0, label="Observed"),
+            matplotlib.lines.Line2D(
+                [0],
+                [0],
+                color="tab:blue",
+                linewidth=2.0,
+                label="Posterior predictive median",
+            ),
+        ],
+        frameon=True,
+    )
+    style_figure_axes(fig=fig, grid_axis="both", xtick_rotation=0)
+    fig.suptitle(f"{fit_title(row)} - PPC density by condition", y=0.99, fontsize=14)
+    finalize_figure_layout(fig=fig, title_top=0.88)
+    save_figure(fig=fig, output_path=output_dir / f"{output_prefix}ppc_density_by_condition.png")
+
+
 def plot_ppc_quantiles(
     idata: az.InferenceData,
     row: pd.Series,
+    prepared: PreparedMetricData,
     output_dir: Path,
     output_prefix: str,
 ) -> None:
@@ -849,6 +1073,7 @@ def plot_ppc_quantiles(
     Args:
         idata (az.InferenceData): Inference data containing posterior predictive draws.
         row (pd.Series): Summary row describing the fit.
+        prepared (PreparedMetricData): Prepared metric-specific arrays matching the fit.
         output_dir (Path): Directory where the quantile comparison should be saved.
         output_prefix (str): Prefix prepended to the saved filename.
 
@@ -856,9 +1081,7 @@ def plot_ppc_quantiles(
         None
     """
 
-    observed = np.asarray(idata.observed_data["observed_metric"], dtype=float)
-    predictive = np.asarray(idata.posterior_predictive["observed_metric"], dtype=float)
-    predictive_samples = predictive.reshape(predictive.shape[0] * predictive.shape[1], predictive.shape[2])
+    observed, predictive_samples = ppc_arrays_on_response_scale(idata=idata, prepared=prepared)
 
     predictive_quantiles = np.quantile(predictive_samples, QUANTILE_LEVELS, axis=1)
     observed_quantiles = np.quantile(observed, QUANTILE_LEVELS)
@@ -895,12 +1118,101 @@ def plot_ppc_quantiles(
     )
     ax.set_xticks(x_positions)
     ax.set_xticklabels([f"q={level:.2f}" for level in QUANTILE_LEVELS], rotation=0)
-    ax.set_ylabel(str(row["metric"]))
+    ax.set_ylabel(metric_axis_label(str(row["metric"])))
     ax.set_title(f"{fit_title(row)} - Observed vs predictive quantiles", pad=16)
     ax.legend(frameon=True)
     ax.grid(axis="y", alpha=GRID_ALPHA, linestyle=GRID_LINESTYLE)
     fig.subplots_adjust(top=0.9, bottom=0.14)
     save_figure(fig=fig, output_path=output_dir / f"{output_prefix}ppc_quantiles.png")
+
+
+def plot_ppc_animal_summary(
+    idata: az.InferenceData,
+    row: pd.Series,
+    prepared: PreparedMetricData,
+    output_dir: Path,
+    output_prefix: str,
+) -> None:
+    """Generate per-animal PPC summaries to separate pooled and conditional misfit.
+
+    Args:
+        idata (az.InferenceData): Inference data containing posterior predictive draws.
+        row (pd.Series): Summary row describing the fit.
+        prepared (PreparedMetricData): Prepared metric-specific arrays matching the fit.
+        output_dir (Path): Directory where the animal-level PPC summary should be saved.
+        output_prefix (str): Prefix prepended to the saved filename.
+
+    Returns:
+        None
+    """
+
+    observed, predictive_samples = ppc_arrays_on_response_scale(idata=idata, prepared=prepared)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+    axes_array = np.atleast_1d(axes)
+    genotype_panels = ((0, prepared.wt_label), (1, prepared.ko_label))
+    for ax, (genotype_value, condition_label) in zip(axes_array, genotype_panels):
+        animal_ids = [
+            animal_index
+            for animal_index, animal_label in enumerate(prepared.animal_labels)
+            if animal_label.startswith(f"{condition_label}__")
+        ]
+        if not animal_ids:
+            ax.set_title(f"{condition_label} (no animals)")
+            continue
+        positions = np.arange(len(animal_ids), dtype=float)
+        observed_means: list[float] = []
+        predictive_medians: list[float] = []
+        predictive_lows: list[float] = []
+        predictive_highs: list[float] = []
+        labels: list[str] = []
+        for animal_id in animal_ids:
+            mask = prepared.animal_idx_obs == animal_id
+            observed_values = observed[mask]
+            predictive_group = predictive_samples[:, mask]
+            predictive_means = np.mean(predictive_group, axis=1)
+            hdi_low, hdi_high = np.asarray(az.hdi(predictive_means, hdi_prob=0.95), dtype=float)
+            observed_means.append(float(np.mean(observed_values)))
+            predictive_medians.append(float(np.median(predictive_means)))
+            predictive_lows.append(float(hdi_low))
+            predictive_highs.append(float(hdi_high))
+            labels.append(animal_display_label(prepared.animal_labels[animal_id]))
+        predictive_medians_array = np.asarray(predictive_medians, dtype=float)
+        predictive_lows_array = np.asarray(predictive_lows, dtype=float)
+        predictive_highs_array = np.asarray(predictive_highs, dtype=float)
+        ax.errorbar(
+            positions,
+            predictive_medians_array,
+            yerr=np.vstack(
+                [
+                    predictive_medians_array - predictive_lows_array,
+                    predictive_highs_array - predictive_medians_array,
+                ]
+            ),
+            fmt="o",
+            color="tab:blue",
+            capsize=4,
+            linewidth=1.5,
+            label="Predictive mean 95% HDI",
+        )
+        ax.scatter(
+            positions,
+            observed_means,
+            color="black",
+            marker="D",
+            s=36,
+            label="Observed mean",
+            zorder=3,
+        )
+        ax.set_title(condition_label, pad=10)
+        ax.set_xticks(positions)
+        ax.set_xticklabels(labels, rotation=45, ha="right")
+        ax.set_xlabel("Animal / block")
+    axes_array[0].set_ylabel(metric_axis_label(str(row["metric"])))
+    axes_array[0].legend(frameon=True)
+    style_figure_axes(fig=fig, grid_axis="y", xtick_rotation=45)
+    fig.suptitle(f"{fit_title(row)} - PPC mean by animal", y=0.99, fontsize=14)
+    finalize_figure_layout(fig=fig, title_top=0.84, hspace=0.4, wspace=0.18)
+    save_figure(fig=fig, output_path=output_dir / f"{output_prefix}ppc_animal_mean.png")
 
 
 def posterior_plot_specs(row: pd.Series) -> list[tuple[str, str, str]]:
@@ -1009,6 +1321,7 @@ def plot_bayesian_superplots(
 def generate_fit_visualizations(
     row: pd.Series,
     idata: az.InferenceData,
+    prepared: PreparedMetricData,
     measurements_df: pd.DataFrame,
     figure_root: Path,
 ) -> None:
@@ -1017,6 +1330,7 @@ def generate_fit_visualizations(
     Args:
         row (pd.Series): Summary row describing one muscle-metric fit.
         idata (az.InferenceData): Inference data for the current fit.
+        prepared (PreparedMetricData): Prepared metric-specific arrays matching the fit.
         measurements_df (pd.DataFrame): Full cleaned measurements table.
         figure_root (Path): Root figure directory for the visualization workflow.
 
@@ -1031,11 +1345,37 @@ def generate_fit_visualizations(
     plot_trace_figure(idata=idata, row=row, output_dir=output_dir, output_prefix=output_prefix)
     plot_rank_figure(idata=idata, row=row, output_dir=output_dir, output_prefix=output_prefix)
     plot_forest_figure(idata=idata, row=row, output_dir=output_dir, output_prefix=output_prefix)
-    if str(row.get("fit_status", "")) == "warn":
+    if str(row.get("engine_fit_status", row.get("fit_status", ""))) == "warn":
         plot_energy_figure(idata=idata, row=row, output_dir=output_dir, output_prefix=output_prefix)
 
-    plot_ppc_density(idata=idata, row=row, output_dir=output_dir, output_prefix=output_prefix)
-    plot_ppc_quantiles(idata=idata, row=row, output_dir=output_dir, output_prefix=output_prefix)
+    plot_ppc_density(
+        idata=idata,
+        row=row,
+        prepared=prepared,
+        output_dir=output_dir,
+        output_prefix=output_prefix,
+    )
+    plot_ppc_density_by_condition(
+        idata=idata,
+        row=row,
+        prepared=prepared,
+        output_dir=output_dir,
+        output_prefix=output_prefix,
+    )
+    plot_ppc_quantiles(
+        idata=idata,
+        row=row,
+        prepared=prepared,
+        output_dir=output_dir,
+        output_prefix=output_prefix,
+    )
+    plot_ppc_animal_summary(
+        idata=idata,
+        row=row,
+        prepared=prepared,
+        output_dir=output_dir,
+        output_prefix=output_prefix,
+    )
     plot_biology_posteriors(idata=idata, row=row, output_dir=output_dir, output_prefix=output_prefix)
     plot_bayesian_superplots(
         measurements_df=measurements_df,
@@ -1056,23 +1396,51 @@ def main() -> None:
     """
 
     args = parse_args()
-    summary_df = load_summary(args.summary)
-    summary_df = filter_summary(summary_df=summary_df, muscles=args.muscles, metrics=args.metrics)
-    summary_df = maybe_refresh_fits(args=args, summary_df=summary_df)
-    measurements_df = pd.read_csv(args.input)
+    config = load_hierarchical_bayes_config(
+        path=args.config,
+        positive_metrics=tuple(POSITIVE_METRICS),
+        bounded_metrics=tuple(BOUNDED_METRICS),
+    )
+    fit_configs = repeated_fit_configs(config)
+    if not fit_configs:
+        print(f"No fits have repeat=true in {config.config_path}; nothing to do.")
+        return
+    measurements_df = pd.read_csv(config.paths.input_csv)
+    validate_config_muscles(
+        config=config,
+        valid_muscles=set(measurements_df["Muscle"].dropna().unique().tolist()),
+    )
+    summary_df = load_or_refresh_summary(
+        summary_path=config.paths.summary_csv,
+        trace_dir=config.paths.trace_dir,
+        refresh_mode=config.runtime.visualization_refresh_mode,
+        config_path=args.config,
+        fit_configs=fit_configs,
+    )
 
     for _, row in summary_df.iterrows():
-        trace_path = resolve_trace_path(row=row, trace_dir=args.trace_dir)
+        fit_config = fit_config_for_pair(
+            config=config,
+            muscle=str(row["muscle"]),
+            metric=str(row["metric"]),
+        )
+        trace_path = resolve_trace_path(row=row, trace_dir=config.paths.trace_dir)
         if not trace_path.exists():
             raise FileNotFoundError(f"Missing trace file for {row['muscle']} / {row['metric']}: {trace_path}")
         print(f"Generating figures for {row['metric']} ({row['muscle']})...")
         idata = az.from_netcdf(trace_path)
-        idata = ensure_augmented_idata(row=row, measurements_df=measurements_df, idata=idata)
+        prepared = prepare_data_for_row(
+            row=row,
+            measurements_df=measurements_df,
+            fit_config=fit_config,
+        )
+        idata = ensure_augmented_idata(prepared=prepared, idata=idata)
         generate_fit_visualizations(
             row=row,
             idata=idata,
+            prepared=prepared,
             measurements_df=measurements_df,
-            figure_root=args.figure_root,
+            figure_root=config.paths.figure_root,
         )
 
 

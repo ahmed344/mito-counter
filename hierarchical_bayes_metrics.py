@@ -14,6 +14,15 @@ import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
 import xarray as xr
+from scipy.stats import wasserstein_distance
+
+from hierarchical_bayes_config import (
+    BayesFitConfig,
+    DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH,
+    load_hierarchical_bayes_config,
+    repeated_fit_configs,
+    validate_config_muscles,
+)
 
 
 INPUT_CSV = Path("/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv")
@@ -21,6 +30,10 @@ OUTPUT_CSV = Path(
     "/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics.csv"
 )
 TRACE_DIR = Path("/workspaces/mito-counter/data/Calpaine_3/results/bayes_traces")
+DEFAULT_POSITIVE_LIKELIHOOD = "gamma"
+DEFAULT_BOUNDED_LIKELIHOOD = "auto"
+POSITIVE_LIKELIHOODS = ("gamma", "lognormal")
+BOUNDED_LIKELIHOODS = ("auto", "beta", "zero_one_inflated_beta")
 
 POSITIVE_METRICS = (
     "Area",
@@ -40,6 +53,8 @@ SMALL_VALUE = 1e-9
 PPC_POSTERIOR_DRAWS = 200
 PPC_OBSERVATION_LIMIT = 500
 REFIT_ESS_THRESHOLD = 400.0
+PPC_RELATIVE_ERROR_THRESHOLD = 0.35
+PPC_DENSITY_BIN_LIMIT = 60
 
 
 @dataclass(frozen=True)
@@ -49,12 +64,14 @@ class PreparedMetricData:
     muscle: str
     metric: str
     family: str
+    likelihood_name: str
     wt_label: str
     ko_label: str
     y: np.ndarray
     observed_y: np.ndarray
     genotype_idx_obs: np.ndarray
     image_idx_obs: np.ndarray
+    animal_idx_obs: np.ndarray
     animal_idx_image: np.ndarray
     genotype_idx_animal: np.ndarray
     genotype_idx_image: np.ndarray
@@ -153,6 +170,8 @@ def diagnostic_var_names(family: str) -> list[str]:
         "kappa_animal",
         "kappa_image",
         "kappa_mito",
+        "boundary_mass",
+        "one_given_boundary",
         "delta_mean",
     ]
 
@@ -238,13 +257,79 @@ def squeeze_beta_values(values: np.ndarray, epsilon: float = 1e-6) -> tuple[np.n
     return adjusted, touched
 
 
-def prepare_metric_data(df: pd.DataFrame, muscle: str, metric: str) -> PreparedMetricData:
+def resolve_bounded_likelihood(values: np.ndarray, bounded_likelihood: str) -> str:
+    """Resolve the bounded-data likelihood choice for one metric subset.
+
+    Args:
+        values (np.ndarray): Raw bounded observations before any preprocessing.
+        bounded_likelihood (str): Requested bounded likelihood strategy.
+
+    Returns:
+        str: Concrete bounded likelihood name used to fit the current subset.
+    """
+
+    if bounded_likelihood == "auto":
+        has_boundary_mass = bool(np.any((values <= 0.0) | (values >= 1.0)))
+        return "zero_one_inflated_beta" if has_boundary_mass else "beta"
+    return bounded_likelihood
+
+
+def lognormal_mu_sigma_from_mean_variance(
+    mean: np.ndarray,
+    variance: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert response-scale mean and variance into LogNormal parameters.
+
+    Args:
+        mean (np.ndarray): Positive response-scale means.
+        variance (np.ndarray): Positive response-scale variances.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Underlying Normal `mu` and `sigma` arrays.
+    """
+
+    clipped_mean = np.clip(mean, SMALL_VALUE, None)
+    clipped_variance = np.clip(variance, SMALL_VALUE, None)
+    sigma_squared = np.log1p(clipped_variance / np.square(clipped_mean))
+    sigma = np.sqrt(np.clip(sigma_squared, SMALL_VALUE, None))
+    mu = np.log(clipped_mean) - 0.5 * sigma_squared
+    return mu, sigma
+
+
+def combine_warning_messages(messages: list[str]) -> str:
+    """Merge semicolon-separated warning fragments into one normalized string.
+
+    Args:
+        messages (list[str]): Individual warning strings that may contain `;` separators.
+
+    Returns:
+        str: Deduplicated warning labels joined by `;`.
+    """
+
+    merged: list[str] = []
+    for message in messages:
+        for fragment in str(message).split(";"):
+            cleaned = fragment.strip()
+            if cleaned and cleaned not in merged:
+                merged.append(cleaned)
+    return ";".join(merged)
+
+
+def prepare_metric_data(
+    df: pd.DataFrame,
+    muscle: str,
+    metric: str,
+    positive_likelihood: str = DEFAULT_POSITIVE_LIKELIHOOD,
+    bounded_likelihood: str = DEFAULT_BOUNDED_LIKELIHOOD,
+) -> PreparedMetricData:
     """Prepare one muscle/metric subset with integer indices for the hierarchy.
 
     Args:
         df (pd.DataFrame): Full cleaned measurements table.
         muscle (str): Muscle name to analyze separately.
         metric (str): Metric column to model.
+        positive_likelihood (str): Positive-family likelihood name to use when applicable.
+        bounded_likelihood (str): Bounded-family likelihood strategy to use when applicable.
 
     Returns:
         PreparedMetricData: Structured arrays and metadata for model construction.
@@ -263,11 +348,21 @@ def prepare_metric_data(df: pd.DataFrame, muscle: str, metric: str) -> PreparedM
     df_metric = df_metric.dropna(subset=["Condition", "Block", "image", "value"])
     df_metric = df_metric.sort_values(["Condition", "Block", "image", "Id"]).reset_index(drop=True)
 
-    values = df_metric["value"].to_numpy(dtype=float)
+    raw_values = df_metric["value"].to_numpy(dtype=float)
+    values = raw_values.copy()
     boundary_adjusted = False
-    if family == "bounded":
+    if family == "positive" and positive_likelihood not in POSITIVE_LIKELIHOODS:
+        raise ValueError(f"Unsupported positive likelihood: {positive_likelihood}")
+    likelihood_name = (
+        positive_likelihood
+        if family == "positive"
+        else resolve_bounded_likelihood(values=raw_values, bounded_likelihood=bounded_likelihood)
+    )
+    if family == "bounded" and likelihood_name not in BOUNDED_LIKELIHOODS[1:]:
+        raise ValueError(f"Unsupported bounded likelihood: {likelihood_name}")
+    if family == "bounded" and likelihood_name == "beta":
         values, boundary_adjusted = squeeze_beta_values(values)
-    observed_y = values.copy()
+    observed_y = raw_values.copy()
 
     positive_scale = 1.0
     if family == "positive":
@@ -314,12 +409,14 @@ def prepare_metric_data(df: pd.DataFrame, muscle: str, metric: str) -> PreparedM
         muscle=muscle,
         metric=metric,
         family=family,
+        likelihood_name=likelihood_name,
         wt_label=wt_label,
         ko_label=ko_label,
         y=df_metric["value"].to_numpy(dtype=float),
         observed_y=observed_y,
         genotype_idx_obs=df_metric["genotype_idx"].to_numpy(dtype=int),
         image_idx_obs=df_metric["image_idx"].to_numpy(dtype=int),
+        animal_idx_obs=df_metric["animal_idx"].to_numpy(dtype=int),
         animal_idx_image=image_table["animal_idx"].to_numpy(dtype=int),
         genotype_idx_animal=animal_table["genotype_idx"].to_numpy(dtype=int),
         genotype_idx_image=image_table["genotype_idx"].to_numpy(dtype=int),
@@ -405,13 +502,29 @@ def build_positive_model(data: PreparedMetricData) -> pm.Model:
             sigma=image_sigma[genotype_idx_image],
             dims="image",
         )
-        pm.Gamma(
-            "observed_metric",
-            mu=image_mean[image_idx_obs],
-            sigma=mito_sigma[genotype_idx_obs],
-            observed=data.y,
-            dims="obs_id",
-        )
+        if data.likelihood_name == "lognormal":
+            observed_mean = image_mean[image_idx_obs]
+            observed_variance = mito_variance[genotype_idx_obs]
+            log_sigma_squared = pt.log1p(
+                observed_variance / pt.clip(pt.square(observed_mean), SMALL_VALUE, np.inf)
+            )
+            log_sigma = pt.sqrt(pt.clip(log_sigma_squared, SMALL_VALUE, np.inf))
+            log_mu = pt.log(pt.clip(observed_mean, SMALL_VALUE, np.inf)) - 0.5 * log_sigma_squared
+            pm.LogNormal(
+                "observed_metric",
+                mu=log_mu,
+                sigma=log_sigma,
+                observed=data.y,
+                dims="obs_id",
+            )
+        else:
+            pm.Gamma(
+                "observed_metric",
+                mu=image_mean[image_idx_obs],
+                sigma=mito_sigma[genotype_idx_obs],
+                observed=data.y,
+                dims="obs_id",
+            )
 
         pm.Deterministic("delta_mean", genotype_mean[1] - genotype_mean[0])
         pm.Deterministic("delta_image_variance", image_variance[1] - image_variance[0])
@@ -471,17 +584,50 @@ def build_bounded_model(data: PreparedMetricData) -> pm.Model:
         mito_kappa = kappa_mito[genotype_idx_obs]
         mito_alpha = pt.clip(mito_parent_mean * mito_kappa, SMALL_VALUE, np.inf)
         mito_beta = pt.clip((1.0 - mito_parent_mean) * mito_kappa, SMALL_VALUE, np.inf)
-        pm.Beta(
-            "observed_metric",
-            alpha=mito_alpha,
-            beta=mito_beta,
-            observed=data.y,
-            dims="obs_id",
-        )
+        if data.likelihood_name == "zero_one_inflated_beta":
+            boundary_mass = pm.Beta("boundary_mass", alpha=1.5, beta=8.5, dims="genotype")
+            one_given_boundary = pm.Beta("one_given_boundary", alpha=1.5, beta=1.5, dims="genotype")
+            zero_weight = boundary_mass[genotype_idx_obs] * (1.0 - one_given_boundary[genotype_idx_obs])
+            one_weight = boundary_mass[genotype_idx_obs] * one_given_boundary[genotype_idx_obs]
+            beta_weight = 1.0 - boundary_mass[genotype_idx_obs]
+            weights = pt.stack([zero_weight, one_weight, beta_weight], axis=1)
+            zero_component = pm.DiracDelta.dist(0.0, shape=data.y.shape[0])
+            one_component = pm.DiracDelta.dist(1.0, shape=data.y.shape[0])
+            beta_component = pm.Beta.dist(alpha=mito_alpha, beta=mito_beta, shape=data.y.shape[0])
+            pm.Mixture(
+                "observed_metric",
+                w=weights,
+                comp_dists=[zero_component, one_component, beta_component],
+                observed=data.y,
+                dims="obs_id",
+            )
+        else:
+            pm.Beta(
+                "observed_metric",
+                alpha=mito_alpha,
+                beta=mito_beta,
+                observed=data.y,
+                dims="obs_id",
+            )
 
         pm.Deterministic("delta_mean", genotype_mean[1] - genotype_mean[0])
 
     return model
+
+
+def build_model(data: PreparedMetricData) -> pm.Model:
+    """Dispatch to the appropriate model builder for one prepared metric dataset.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and metadata.
+
+    Returns:
+        pm.Model: PyMC model matching the family and likelihood configured for `data`.
+    """
+
+    if data.family == "positive":
+        return build_positive_model(data)
+    return build_bounded_model(data)
 
 
 def sample_model(
@@ -651,6 +797,7 @@ def attach_response_scale_posterior(
     idata.attrs["muscle"] = data.muscle
     idata.attrs["metric"] = data.metric
     idata.attrs["family"] = data.family
+    idata.attrs["likelihood_name"] = data.likelihood_name
     idata.attrs["fit_stem"] = fit_stem(muscle=data.muscle, metric=data.metric)
     return idata
 
@@ -822,7 +969,8 @@ def posterior_diagnostics(idata: az.InferenceData, var_names: list[str]) -> dict
         dict[str, float]: Maximum R-hat, minimum ESS values, and divergence count.
     """
 
-    summary = az.summary(idata, var_names=var_names, round_to=None)
+    available_var_names = [var_name for var_name in var_names if var_name in idata.posterior.data_vars]
+    summary = az.summary(idata, var_names=available_var_names, round_to=None)
     sample_stats = idata.sample_stats
     return {
         "rhat_max": float(summary["r_hat"].max()),
@@ -868,11 +1016,14 @@ def fit_quality_key(row: dict[str, Any]) -> tuple[int, int, float, float]:
 
     if row.get("fit_status") == "error":
         return (3, int(1e9), float(1e9), float(1e9))
-    status_penalty = 0 if row.get("fit_status") == "ok" else 1
+    status_penalty = 0 if row.get("engine_fit_status") == "ok" else 1
     divergences = int(row.get("divergences", 0))
-    rhat_penalty = max(float(row.get("rhat_max", 99.0)) - 1.0, 0.0)
+    predictive_penalty = 0 if row.get("ppc_fit_status") == "ok" else 1
+    rhat_penalty = max(float(row.get("rhat_max", 99.0)) - 1.0, 0.0) + float(
+        row.get("ppc_max_abs_rel", 99.0)
+    )
     ess_penalty = -float(row.get("ess_bulk_min", 0.0))
-    return (status_penalty, divergences, rhat_penalty, ess_penalty)
+    return (status_penalty + predictive_penalty, divergences, rhat_penalty, ess_penalty)
 
 
 def sampling_plan(
@@ -911,6 +1062,118 @@ def sampling_plan(
     return next_draws, next_tune, next_target_accept
 
 
+def simulate_predictive_subset(
+    data: PreparedMetricData,
+    idata: az.InferenceData,
+    draw_indices: np.ndarray,
+    obs_indices: np.ndarray,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Simulate posterior predictive draws for a subset of observations.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and metadata.
+        idata (az.InferenceData): Posterior samples for one fitted model.
+        draw_indices (np.ndarray): Flattened posterior draw indices to sample from.
+        obs_indices (np.ndarray): Observation indices to simulate.
+        rng (np.random.Generator): Random number generator used for simulation.
+
+    Returns:
+        np.ndarray: Predictive draws with shape `(n_draws, n_observations)`.
+    """
+
+    image_mean = flatten_draws(idata.posterior["image_mean"])[draw_indices]
+    obs_image_idx = data.image_idx_obs[obs_indices]
+    obs_genotype_idx = data.genotype_idx_obs[obs_indices]
+    parent_mean = image_mean[:, obs_image_idx]
+
+    if data.family == "positive":
+        mito_variance = flatten_draws(idata.posterior["mito_variance"])[draw_indices]
+        obs_variance = mito_variance[:, obs_genotype_idx]
+        if data.likelihood_name == "lognormal":
+            log_mu, log_sigma = lognormal_mu_sigma_from_mean_variance(
+                mean=parent_mean,
+                variance=obs_variance,
+            )
+            return data.positive_scale * rng.lognormal(mean=log_mu, sigma=log_sigma)
+        gamma_shape = np.square(parent_mean) / np.clip(obs_variance, SMALL_VALUE, None)
+        gamma_scale = np.clip(obs_variance, SMALL_VALUE, None) / np.clip(parent_mean, SMALL_VALUE, None)
+        return data.positive_scale * rng.gamma(shape=gamma_shape, scale=gamma_scale)
+
+    kappa_mito = flatten_draws(idata.posterior["kappa_mito"])[draw_indices]
+    obs_kappa = kappa_mito[:, obs_genotype_idx]
+    alpha = np.clip(parent_mean * obs_kappa, SMALL_VALUE, None)
+    beta = np.clip((1.0 - parent_mean) * obs_kappa, SMALL_VALUE, None)
+    beta_predictive = rng.beta(alpha, beta)
+    if data.likelihood_name != "zero_one_inflated_beta":
+        return beta_predictive
+
+    boundary_mass = flatten_draws(idata.posterior["boundary_mass"])[draw_indices][:, obs_genotype_idx]
+    one_given_boundary = flatten_draws(idata.posterior["one_given_boundary"])[draw_indices][
+        :, obs_genotype_idx
+    ]
+    uniforms = rng.random(size=beta_predictive.shape)
+    zero_cutoff = boundary_mass * (1.0 - one_given_boundary)
+    boundary_cutoff = boundary_mass
+    return np.where(
+        uniforms < zero_cutoff,
+        0.0,
+        np.where(uniforms < boundary_cutoff, 1.0, beta_predictive),
+    )
+
+
+def histogram_bin_edges_from_samples(
+    observed: np.ndarray,
+    predictive: np.ndarray,
+) -> np.ndarray:
+    """Build shared histogram edges for observed and predictive PPC samples.
+
+    Args:
+        observed (np.ndarray): Observed response-scale sample values.
+        predictive (np.ndarray): Predictive response-scale sample values.
+
+    Returns:
+        np.ndarray: Histogram bin edges covering both samples.
+    """
+
+    combined = np.concatenate([np.asarray(observed, dtype=float), np.asarray(predictive, dtype=float)])
+    finite = combined[np.isfinite(combined)]
+    if finite.size == 0:
+        return np.linspace(0.0, 1.0, 20)
+    lower = float(np.min(finite))
+    upper = float(np.max(finite))
+    if np.isclose(lower, upper):
+        padding = max(abs(lower) * 0.05, 0.05)
+        return np.linspace(lower - padding, upper + padding, 20)
+    edges = np.histogram_bin_edges(finite, bins="fd")
+    if edges.size < 12:
+        edges = np.linspace(lower, upper, 20)
+    if edges.size > PPC_DENSITY_BIN_LIMIT:
+        edges = np.linspace(lower, upper, PPC_DENSITY_BIN_LIMIT)
+    return np.asarray(edges, dtype=float)
+
+
+def integrated_density_error(
+    observed: np.ndarray,
+    predictive: np.ndarray,
+) -> float:
+    """Compute integrated absolute histogram-density error between two samples.
+
+    Args:
+        observed (np.ndarray): Observed response-scale sample values.
+        predictive (np.ndarray): Predictive response-scale sample values.
+
+    Returns:
+        float: L1 distance between observed and predictive histogram densities.
+    """
+
+    edges = histogram_bin_edges_from_samples(observed=observed, predictive=predictive)
+    observed_density, _ = np.histogram(observed, bins=edges, density=True)
+    predictive_density, _ = np.histogram(predictive, bins=edges, density=True)
+    widths = np.diff(edges)
+    return float(np.sum(np.abs(observed_density - predictive_density) * widths))
+
+
 def compute_ppc_summary(
     data: PreparedMetricData,
     idata: az.InferenceData,
@@ -936,31 +1199,72 @@ def compute_ppc_summary(
     obs_indices = rng.choice(data.y.shape[0], size=obs_count, replace=False)
     observed_subset = data.observed_y[obs_indices]
 
-    image_mean = flatten_draws(idata.posterior["image_mean"])[draw_indices]
-    obs_image_idx = data.image_idx_obs[obs_indices]
-    obs_genotype_idx = data.genotype_idx_obs[obs_indices]
-    parent_mean = image_mean[:, obs_image_idx]
-
-    if data.family == "positive":
-        mito_variance = flatten_draws(idata.posterior["mito_variance"])[draw_indices]
-        obs_variance = mito_variance[:, obs_genotype_idx]
-        gamma_shape = np.square(parent_mean) / np.clip(obs_variance, SMALL_VALUE, None)
-        gamma_scale = np.clip(obs_variance, SMALL_VALUE, None) / np.clip(parent_mean, SMALL_VALUE, None)
-        predictive = data.positive_scale * rng.gamma(shape=gamma_shape, scale=gamma_scale)
-    else:
-        kappa_mito = flatten_draws(idata.posterior["kappa_mito"])[draw_indices]
-        obs_kappa = kappa_mito[:, obs_genotype_idx]
-        alpha = np.clip(parent_mean * obs_kappa, SMALL_VALUE, None)
-        beta = np.clip((1.0 - parent_mean) * obs_kappa, SMALL_VALUE, None)
-        predictive = rng.beta(alpha, beta)
-
+    predictive = simulate_predictive_subset(
+        data=data,
+        idata=idata,
+        draw_indices=draw_indices,
+        obs_indices=obs_indices,
+        rng=rng,
+    )
     predictive_flat = predictive.reshape(-1)
+    observed_mean = float(np.mean(observed_subset))
+    observed_sd = float(np.std(observed_subset, ddof=1)) if observed_subset.size > 1 else 0.0
+    observed_q10 = float(np.quantile(observed_subset, 0.10))
+    observed_q90 = float(np.quantile(observed_subset, 0.90))
+    robust_scale = max(
+        observed_sd,
+        float(np.quantile(observed_subset, 0.90) - np.quantile(observed_subset, 0.10)),
+        float(np.abs(np.median(observed_subset))),
+        SMALL_VALUE,
+    )
+    mean_error = float(np.mean(predictive_flat) - observed_mean)
+    sd_error = float(np.std(predictive_flat, ddof=1) - observed_sd)
+    q10_error = float(np.quantile(predictive_flat, 0.10) - observed_q10)
+    q90_error = float(np.quantile(predictive_flat, 0.90) - observed_q90)
+    wasserstein = float(wasserstein_distance(observed_subset, predictive_flat))
+    density_l1 = integrated_density_error(observed=observed_subset, predictive=predictive_flat)
     return {
-        "ppc_mean_error": float(np.mean(predictive_flat) - np.mean(observed_subset)),
-        "ppc_sd_error": float(np.std(predictive_flat, ddof=1) - np.std(observed_subset, ddof=1)),
-        "ppc_q10_error": float(np.quantile(predictive_flat, 0.10) - np.quantile(observed_subset, 0.10)),
-        "ppc_q90_error": float(np.quantile(predictive_flat, 0.90) - np.quantile(observed_subset, 0.90)),
+        "ppc_observed_mean": observed_mean,
+        "ppc_observed_sd": observed_sd,
+        "ppc_mean_error": mean_error,
+        "ppc_sd_error": sd_error,
+        "ppc_q10_error": q10_error,
+        "ppc_q90_error": q90_error,
+        "ppc_scale": robust_scale,
+        "ppc_mean_abs_rel": float(abs(mean_error) / robust_scale),
+        "ppc_sd_abs_rel": float(abs(sd_error) / robust_scale),
+        "ppc_q10_abs_rel": float(abs(q10_error) / robust_scale),
+        "ppc_q90_abs_rel": float(abs(q90_error) / robust_scale),
+        "ppc_max_abs_rel": float(max(abs(mean_error), abs(sd_error), abs(q10_error), abs(q90_error)) / robust_scale),
+        "ppc_wasserstein": wasserstein,
+        "ppc_wasserstein_rel": float(wasserstein / robust_scale),
+        "ppc_density_l1": density_l1,
     }
+
+
+def ppc_status(ppc_summary: dict[str, float]) -> tuple[str, str]:
+    """Classify whether PPC discrepancies are small enough for an `ok` fit label.
+
+    Args:
+        ppc_summary (dict[str, float]): Scalar posterior predictive discrepancy summary.
+
+    Returns:
+        tuple[str, str]: PPC status label and a semicolon-separated warning message.
+    """
+
+    warnings: list[str] = []
+    if float(ppc_summary["ppc_mean_abs_rel"]) > PPC_RELATIVE_ERROR_THRESHOLD:
+        warnings.append("ppc_mean_mismatch")
+    if float(ppc_summary["ppc_sd_abs_rel"]) > PPC_RELATIVE_ERROR_THRESHOLD:
+        warnings.append("ppc_sd_mismatch")
+    if max(
+        float(ppc_summary["ppc_q10_abs_rel"]),
+        float(ppc_summary["ppc_q90_abs_rel"]),
+    ) > PPC_RELATIVE_ERROR_THRESHOLD:
+        warnings.append("ppc_quantile_mismatch")
+    if warnings:
+        return ("warn", ";".join(warnings))
+    return ("ok", "")
 
 
 def summarize_model(
@@ -988,24 +1292,10 @@ def summarize_model(
 
     if data.family == "positive":
         variance_draws = gamma_variance_summaries(data, idata)
-        diagnostic_names = [
-            "genotype_mean",
-            "animal_variance",
-            "image_variance",
-            "mito_variance",
-            "delta_mean",
-            "delta_image_variance",
-            "delta_mito_variance",
-        ]
+        diagnostic_names = diagnostic_var_names(data.family)
     else:
         variance_draws = beta_variance_summaries(data, idata)
-        diagnostic_names = [
-            "genotype_mean",
-            "kappa_animal",
-            "kappa_image",
-            "kappa_mito",
-            "delta_mean",
-        ]
+        diagnostic_names = diagnostic_var_names(data.family)
 
     mean_scale = data.positive_scale if data.family == "positive" else 1.0
 
@@ -1013,6 +1303,7 @@ def summarize_model(
         "muscle": data.muscle,
         "metric": data.metric,
         "family": data.family,
+        "likelihood_name": data.likelihood_name,
         "wt_label": data.wt_label,
         "ko_label": data.ko_label,
         "n_obs_wt": data.n_obs_wt,
@@ -1037,10 +1328,16 @@ def summarize_model(
     row["ko_mito_variance"] = float(np.median(variance_draws["ko_mito_variance"]))
     diagnostics = posterior_diagnostics(idata, diagnostic_names)
     row.update(diagnostics)
-    row.update(compute_ppc_summary(data, idata, random_seed=random_seed))
-    fit_status, warning_message = diagnostic_status(diagnostics)
-    row["fit_status"] = fit_status
-    row["warning_message"] = warning_message
+    ppc_summary = compute_ppc_summary(data, idata, random_seed=random_seed)
+    row.update(ppc_summary)
+    engine_fit_status, engine_warning_message = diagnostic_status(diagnostics)
+    ppc_fit_status, ppc_warning_message = ppc_status(ppc_summary)
+    row["engine_fit_status"] = engine_fit_status
+    row["engine_warning_message"] = engine_warning_message
+    row["ppc_fit_status"] = ppc_fit_status
+    row["ppc_warning_message"] = ppc_warning_message
+    row["fit_status"] = "ok" if engine_fit_status == "ok" and ppc_fit_status == "ok" else "warn"
+    row["warning_message"] = combine_warning_messages([engine_warning_message, ppc_warning_message])
     return row
 
 
@@ -1048,6 +1345,8 @@ def analyze_metric(
     df: pd.DataFrame,
     muscle: str,
     metric: str,
+    positive_likelihood: str,
+    bounded_likelihood: str,
     draws: int,
     tune: int,
     chains: int,
@@ -1061,6 +1360,8 @@ def analyze_metric(
         df (pd.DataFrame): Full cleaned measurements table.
         muscle (str): Muscle name to analyze.
         metric (str): Metric column to fit.
+        positive_likelihood (str): Positive-family likelihood name used when applicable.
+        bounded_likelihood (str): Bounded-family likelihood strategy used when applicable.
         draws (int): Number of posterior draws per chain.
         tune (int): Number of warmup draws per chain.
         chains (int): Number of MCMC chains.
@@ -1072,10 +1373,15 @@ def analyze_metric(
         MetricAnalysisResult: Winning summary row plus prepared data and posterior samples.
     """
 
-    data = prepare_metric_data(df=df, muscle=muscle, metric=metric)
-    model_builder = build_positive_model if data.family == "positive" else build_bounded_model
+    data = prepare_metric_data(
+        df=df,
+        muscle=muscle,
+        metric=metric,
+        positive_likelihood=positive_likelihood,
+        bounded_likelihood=bounded_likelihood,
+    )
     attempt_results: list[MetricAnalysisResult] = []
-    warning_message = ""
+    engine_warning_message = ""
 
     for attempt_index in range(3):
         attempt_draws, attempt_tune, attempt_target_accept = sampling_plan(
@@ -1083,10 +1389,10 @@ def analyze_metric(
             tune=tune,
             target_accept=target_accept,
             attempt_index=attempt_index,
-            warning_message=warning_message,
+            warning_message=engine_warning_message,
         )
         try:
-            model = model_builder(data)
+            model = build_model(data)
             idata, sampling_seconds = sample_model(
                 model=model,
                 draws=attempt_draws,
@@ -1108,14 +1414,15 @@ def analyze_metric(
             row["sampling_target_accept"] = attempt_target_accept
             attempt_result = MetricAnalysisResult(row=row, data=data, idata=idata)
             attempt_results.append(attempt_result)
-            warning_message = str(row.get("warning_message", ""))
-            if row.get("fit_status") == "ok":
+            engine_warning_message = str(row.get("engine_warning_message", ""))
+            if row.get("engine_fit_status") == "ok":
                 return attempt_result
         except Exception as exc:  # pragma: no cover - defensive reporting for long batch runs.
             error_row = {
                 "muscle": muscle,
                 "metric": metric,
                 "family": data.family,
+                "likelihood_name": data.likelihood_name,
                 "wt_label": data.wt_label,
                 "ko_label": data.ko_label,
                 "n_obs_wt": data.n_obs_wt,
@@ -1126,6 +1433,11 @@ def analyze_metric(
                 "n_images_ko": data.n_images_ko,
                 "boundary_adjusted": data.boundary_adjusted,
                 "fit_status": "error",
+                "engine_fit_status": "error",
+                "ppc_fit_status": "error",
+                "engine_warning_message": "error",
+                "ppc_warning_message": "error",
+                "warning_message": "error",
                 "error_message": str(exc),
                 "attempt": attempt_index + 1,
                 "sampling_draws": attempt_draws,
@@ -1139,7 +1451,7 @@ def analyze_metric(
                     idata=None,
                 )
             )
-            warning_message = "error"
+            engine_warning_message = "error"
 
     return min(attempt_results, key=lambda result: fit_quality_key(result.row))
 
@@ -1170,50 +1482,50 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fit hierarchical Bayesian models for per-mitochondrion metrics."
     )
-    parser.add_argument("--input", type=Path, default=INPUT_CSV)
-    parser.add_argument("--output", type=Path, default=OUTPUT_CSV)
-    parser.add_argument("--draws", type=int, default=500)
-    parser.add_argument("--tune", type=int, default=500)
-    parser.add_argument("--chains", type=int, default=4)
-    parser.add_argument("--cores", type=int, default=4)
-    parser.add_argument("--target-accept", type=float, default=0.95)
-    parser.add_argument("--seed", type=int, default=20260415)
-    parser.add_argument("--muscles", nargs="*", default=None)
-    parser.add_argument("--metrics", nargs="*", default=None)
-    parser.add_argument("--trace-dir", type=Path, default=TRACE_DIR)
-    parser.add_argument("--no-save-idata", action="store_true")
+    parser.add_argument("--config", type=Path, default=DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH)
     return parser.parse_args()
 
 
-def selected_metrics(metric_arg: list[str] | None) -> list[str]:
-    """Resolve which metrics should be analyzed in this run.
+def fit_likelihood_arguments(fit_config: BayesFitConfig) -> tuple[str, str]:
+    """Resolve positive and bounded likelihood arguments for one fit config.
 
     Args:
-        metric_arg (list[str] | None): Optional metric names passed on the command line.
+        fit_config (BayesFitConfig): Per-fit configuration from the YAML file.
 
     Returns:
-        list[str]: Ordered metric names for the batch run.
+        tuple[str, str]: Positive and bounded likelihood names for `analyze_metric()`.
     """
 
-    if metric_arg:
-        return metric_arg
-    return list(POSITIVE_METRICS + BOUNDED_METRICS)
+    if fit_config.metric in POSITIVE_METRICS:
+        return fit_config.likelihood, "beta"
+    return "gamma", fit_config.likelihood
 
 
-def selected_muscles(df: pd.DataFrame, muscle_arg: list[str] | None) -> list[str]:
-    """Resolve which muscles should be analyzed in this run.
+def merge_result_rows(
+    output_path: Path,
+    new_rows_df: pd.DataFrame,
+    update_mode: str,
+) -> pd.DataFrame:
+    """Merge refreshed summary rows into an existing summary CSV when requested.
 
     Args:
-        df (pd.DataFrame): Full cleaned measurements table.
-        muscle_arg (list[str] | None): Optional muscle names passed on the command line.
+        output_path (Path): Summary CSV path configured for the workflow.
+        new_rows_df (pd.DataFrame): Freshly computed rows for the current rerun.
+        update_mode (str): Summary update mode, either `merge` or `replace`.
 
     Returns:
-        list[str]: Ordered muscle names for the batch run.
+        pd.DataFrame: Final summary dataframe that should be written to disk.
     """
 
-    if muscle_arg:
-        return muscle_arg
-    return sorted(df["Muscle"].dropna().unique().tolist())
+    if update_mode == "replace" or not output_path.exists():
+        return new_rows_df.sort_values(["muscle", "metric"]).reset_index(drop=True)
+    existing_df = pd.read_csv(output_path)
+    rerun_pairs = set(zip(new_rows_df["muscle"], new_rows_df["metric"], strict=False))
+    preserved_df = existing_df.loc[
+        ~existing_df.apply(lambda row: (row["muscle"], row["metric"]) in rerun_pairs, axis=1)
+    ].copy()
+    merged_df = pd.concat([preserved_df, new_rows_df], ignore_index=True, sort=False)
+    return merged_df.sort_values(["muscle", "metric"]).reset_index(drop=True)
 
 
 def finalize_fit_artifacts(
@@ -1237,8 +1549,7 @@ def finalize_fit_artifacts(
     if result.data is None or result.idata is None:
         return result
 
-    model_builder = build_positive_model if result.data.family == "positive" else build_bounded_model
-    model = model_builder(result.data)
+    model = build_model(result.data)
     idata = attach_posterior_predictive(model=model, idata=result.idata, random_seed=random_seed)
     idata = attach_response_scale_posterior(data=result.data, idata=idata)
 
@@ -1260,37 +1571,51 @@ def main() -> None:
     """
 
     args = parse_args()
-    df = load_measurements(args.input)
+    config = load_hierarchical_bayes_config(
+        path=args.config,
+        positive_metrics=tuple(POSITIVE_METRICS),
+        bounded_metrics=tuple(BOUNDED_METRICS),
+    )
+    df = load_measurements(config.paths.input_csv)
+    validate_config_muscles(config=config, valid_muscles=set(df["Muscle"].dropna().unique().tolist()))
+    fit_configs = repeated_fit_configs(config)
+    if not fit_configs:
+        print(f"No fits have repeat=true in {config.config_path}; nothing to do.")
+        return
     rows: list[dict[str, Any]] = []
-    metrics = selected_metrics(args.metrics)
-    muscles = selected_muscles(df, args.muscles)
+    for fit_index, fit_config in enumerate(fit_configs):
+        seed = config.runtime.seed + fit_index
+        positive_likelihood, bounded_likelihood = fit_likelihood_arguments(fit_config=fit_config)
+        print(f"Fitting {fit_config.metric} for {fit_config.muscle}...")
+        result = analyze_metric(
+            df=df,
+            muscle=fit_config.muscle,
+            metric=fit_config.metric,
+            positive_likelihood=positive_likelihood,
+            bounded_likelihood=bounded_likelihood,
+            draws=fit_config.draws,
+            tune=fit_config.tune,
+            chains=fit_config.chains,
+            cores=config.runtime.cores,
+            target_accept=fit_config.target_accept,
+            random_seed=seed,
+        )
+        finalized_result = finalize_fit_artifacts(
+            result=result,
+            trace_dir=None if not config.runtime.save_idata else config.paths.trace_dir,
+            random_seed=seed + 10_000,
+        )
+        rows.append(finalized_result.row)
 
-    for muscle in muscles:
-        for metric_index, metric in enumerate(metrics):
-            seed = args.seed + (100 * muscles.index(muscle)) + metric_index
-            print(f"Fitting {metric} for {muscle}...")
-            result = analyze_metric(
-                df=df,
-                muscle=muscle,
-                metric=metric,
-                draws=args.draws,
-                tune=args.tune,
-                chains=args.chains,
-                cores=args.cores,
-                target_accept=args.target_accept,
-                random_seed=seed,
-            )
-            finalized_result = finalize_fit_artifacts(
-                result=result,
-                trace_dir=None if args.no_save_idata else args.trace_dir,
-                random_seed=seed + 10_000,
-            )
-            rows.append(finalized_result.row)
-
-    result_df = pd.DataFrame(rows).sort_values(["muscle", "metric"]).reset_index(drop=True)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    result_df.to_csv(args.output, index=False)
-    print(f"Saved results to {args.output}")
+    result_df = pd.DataFrame(rows)
+    result_df = merge_result_rows(
+        output_path=config.paths.summary_csv,
+        new_rows_df=result_df,
+        update_mode=config.runtime.summary_update_mode,
+    )
+    config.paths.summary_csv.parent.mkdir(parents=True, exist_ok=True)
+    result_df.to_csv(config.paths.summary_csv, index=False)
+    print(f"Saved results to {config.paths.summary_csv}")
 
 
 if __name__ == "__main__":
