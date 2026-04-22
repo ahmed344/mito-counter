@@ -14,6 +14,8 @@ DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH = Path(
 )
 ALLOWED_SUMMARY_UPDATE_MODES = ("merge", "replace")
 ALLOWED_VISUALIZATION_REFRESH_MODES = ("never", "refit_first", "rerun_missing_traces")
+ALLOWED_POSITIVE_LIKELIHOODS = ("gamma", "lognormal")
+ALLOWED_BOUNDED_LIKELIHOODS = ("beta", "zero_one_inflated_beta", "logitnormal")
 
 
 @dataclass(frozen=True)
@@ -310,15 +312,15 @@ def validate_available_options(section: dict[str, Any]) -> None:
     summary_update_modes = tuple(section["summary_update_modes"])
     visualization_refresh_modes = tuple(section["visualization_refresh_modes"])
     repeat_options = tuple(section["repeat_options"])
-    if positive_likelihoods != ("gamma", "lognormal"):
+    if positive_likelihoods != ALLOWED_POSITIVE_LIKELIHOODS:
         raise ValueError(
             "Config section 'available_options.positive_likelihoods' must be "
-            "['gamma', 'lognormal']."
+            f"{list(ALLOWED_POSITIVE_LIKELIHOODS)}."
         )
-    if bounded_likelihoods != ("beta", "zero_one_inflated_beta"):
+    if bounded_likelihoods != ALLOWED_BOUNDED_LIKELIHOODS:
         raise ValueError(
             "Config section 'available_options.bounded_likelihoods' must be "
-            "['beta', 'zero_one_inflated_beta']."
+            f"{list(ALLOWED_BOUNDED_LIKELIHOODS)}."
         )
     if summary_update_modes != ALLOWED_SUMMARY_UPDATE_MODES:
         raise ValueError(
@@ -366,16 +368,17 @@ def parse_fit_entry(
     metric_family = "unknown"
     if metric in positive_metrics:
         metric_family = "positive"
-        if likelihood not in ("gamma", "lognormal"):
+        if likelihood not in ALLOWED_POSITIVE_LIKELIHOODS:
             raise ValueError(
-                f"Config value '{section_name}.likelihood' must be one of ['gamma', 'lognormal'] for metric '{metric}'."
+                "Config value "
+                f"'{section_name}.likelihood' must be one of {list(ALLOWED_POSITIVE_LIKELIHOODS)} for metric '{metric}'."
             )
     elif metric in bounded_metrics:
         metric_family = "bounded"
-        if likelihood not in ("beta", "zero_one_inflated_beta"):
+        if likelihood not in ALLOWED_BOUNDED_LIKELIHOODS:
             raise ValueError(
                 "Config value "
-                f"'{section_name}.likelihood' must be one of ['beta', 'zero_one_inflated_beta'] for metric '{metric}'."
+                f"'{section_name}.likelihood' must be one of {list(ALLOWED_BOUNDED_LIKELIHOODS)} for metric '{metric}'."
             )
     if metric_family == "unknown":
         raise ValueError(f"Config value '{section_name}.metric' is not a supported metric: {metric}.")

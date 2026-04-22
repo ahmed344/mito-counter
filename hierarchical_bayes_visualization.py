@@ -720,7 +720,15 @@ def plot_trace_figure(
         None
     """
 
-    var_names = available_var_names(idata=idata, requested=diagnostic_var_names(str(row["family"])))
+    var_names = available_var_names(
+        idata=idata,
+        requested=diagnostic_var_names(
+            str(row["family"]),
+            str(row.get("likelihood_name", "")),
+        ),
+    )
+    if not var_names:
+        return
     axes = az.plot_trace(
         idata,
         var_names=var_names,
@@ -763,7 +771,15 @@ def plot_rank_figure(
         None
     """
 
-    var_names = available_var_names(idata=idata, requested=diagnostic_var_names(str(row["family"])))
+    var_names = available_var_names(
+        idata=idata,
+        requested=diagnostic_var_names(
+            str(row["family"]),
+            str(row.get("likelihood_name", "")),
+        ),
+    )
+    if not var_names:
+        return
     axes = az.plot_rank(
         idata,
         var_names=var_names,
@@ -801,7 +817,13 @@ def plot_forest_figure(
         None
     """
 
-    var_names = available_var_names(idata=idata, requested=diagnostic_var_names(str(row["family"])))
+    var_names = available_var_names(
+        idata=idata,
+        requested=diagnostic_var_names(
+            str(row["family"]),
+            str(row.get("likelihood_name", "")),
+        ),
+    )
     parameter_summaries = summarize_forest_parameters(idata=idata, var_names=var_names, hdi_prob=0.95)
     if not parameter_summaries:
         return
@@ -995,7 +1017,7 @@ def plot_ppc_density(
                 [0],
                 color="tab:blue",
                 linewidth=2.0,
-                label="Posterior predictive median",
+                label="Posterior predictive median density",
             ),
         ],
         frameon=True,
@@ -1050,7 +1072,7 @@ def plot_ppc_density_by_condition(
                 [0],
                 color="tab:blue",
                 linewidth=2.0,
-                label="Posterior predictive median",
+                label="Posterior predictive median density",
             ),
         ],
         frameon=True,
@@ -1105,7 +1127,7 @@ def plot_ppc_quantiles(
         color="tab:blue",
         capsize=4,
         linewidth=1.5,
-        label="Posterior predictive 95% HDI",
+        label="Posterior predictive quantile 95% HDI",
     )
     ax.scatter(
         x_positions,
@@ -1192,7 +1214,7 @@ def plot_ppc_animal_summary(
             color="tab:blue",
             capsize=4,
             linewidth=1.5,
-            label="Predictive mean 95% HDI",
+            label="Posterior predictive mean 95% HDI",
         )
         ax.scatter(
             positions,
@@ -1215,20 +1237,30 @@ def plot_ppc_animal_summary(
     save_figure(fig=fig, output_path=output_dir / f"{output_prefix}ppc_animal_mean.png")
 
 
-def posterior_plot_specs(row: pd.Series) -> list[tuple[str, str, str]]:
+def posterior_plot_specs(row: pd.Series) -> list[tuple[str, str, str, str]]:
     """Describe the biology-facing posterior plots to generate for one fit.
 
     Args:
         row (pd.Series): Summary row describing one muscle-metric fit.
 
     Returns:
-        list[tuple[str, str, str]]: Triples of posterior var name, summary column, and filename stem.
+        list[tuple[str, str, str, str]]: Posterior var name, summary column, filename stem, and label.
     """
 
     return [
-        ("delta_mean_response", "delta_mean_summary", "delta_mean"),
-        ("delta_image_variance_response", "delta_image_variance_summary", "delta_image_variance"),
-        ("delta_mito_variance_response", "delta_mito_variance_summary", "delta_mito_variance"),
+        ("delta_mean_response", "delta_mean_summary", "delta_mean", "Genotype delta in mean"),
+        (
+            "delta_image_variance_response",
+            "delta_image_variance_summary",
+            "delta_image_variance",
+            "Genotype delta in aggregated image variance",
+        ),
+        (
+            "delta_mito_variance_response",
+            "delta_mito_variance_summary",
+            "delta_mito_variance",
+            "Genotype delta in aggregated mito variance",
+        ),
     ]
 
 
@@ -1251,7 +1283,7 @@ def plot_biology_posteriors(
     """
 
     available = set(biology_posterior_var_names(family=str(row["family"])))
-    for variable_name, summary_column, filename_stem in posterior_plot_specs(row):
+    for variable_name, summary_column, filename_stem, quantity_label in posterior_plot_specs(row):
         if variable_name not in available or variable_name not in idata.posterior.data_vars:
             continue
         axes = az.plot_posterior(
@@ -1267,8 +1299,9 @@ def plot_biology_posteriors(
         style_figure_axes(fig=fig, grid_axis="x", xtick_rotation=POSTERIOR_XTICK_ROTATION)
         figure_summary = str(row.get(summary_column, "")).strip()
         fig.suptitle(fit_title(row), y=0.99, fontsize=13)
-        if fig.axes and figure_summary:
-            fig.axes[0].set_title(figure_summary, fontsize=11, pad=18)
+        if fig.axes:
+            title_text = quantity_label if not figure_summary else f"{quantity_label}\n{figure_summary}"
+            fig.axes[0].set_title(title_text, fontsize=11, pad=18)
         finalize_figure_layout(fig=fig, title_top=0.8)
         save_figure(fig=fig, output_path=output_dir / f"{output_prefix}{filename_stem}.png")
 

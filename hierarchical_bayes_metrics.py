@@ -14,6 +14,7 @@ import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
 import xarray as xr
+from scipy.special import expit
 from scipy.stats import wasserstein_distance
 
 from hierarchical_bayes_config import (
@@ -33,7 +34,7 @@ TRACE_DIR = Path("/workspaces/mito-counter/data/Calpaine_3/results/bayes_traces"
 DEFAULT_POSITIVE_LIKELIHOOD = "gamma"
 DEFAULT_BOUNDED_LIKELIHOOD = "auto"
 POSITIVE_LIKELIHOODS = ("gamma", "lognormal")
-BOUNDED_LIKELIHOODS = ("auto", "beta", "zero_one_inflated_beta")
+BOUNDED_LIKELIHOODS = ("auto", "beta", "zero_one_inflated_beta", "logitnormal")
 
 POSITIVE_METRICS = (
     "Area",
@@ -55,6 +56,7 @@ PPC_OBSERVATION_LIMIT = 500
 REFIT_ESS_THRESHOLD = 400.0
 PPC_RELATIVE_ERROR_THRESHOLD = 0.35
 PPC_DENSITY_BIN_LIMIT = 60
+LOGITNORMAL_QUADRATURE_POINTS = 20
 
 
 @dataclass(frozen=True)
@@ -145,11 +147,12 @@ def trace_path_for_fit(trace_dir: Path, muscle: str, metric: str) -> Path:
     return trace_dir / f"{fit_stem(muscle=muscle, metric=metric)}.nc"
 
 
-def diagnostic_var_names(family: str) -> list[str]:
+def diagnostic_var_names(family: str, likelihood_name: str = "") -> list[str]:
     """Return the posterior variable names used for engine-check plots.
 
     Args:
         family (str): Metric family name, either ``positive`` or ``bounded``.
+        likelihood_name (str): Concrete likelihood name used within the metric family.
 
     Returns:
         list[str]: Variable names suitable for trace, rank, and forest plots.
@@ -161,15 +164,29 @@ def diagnostic_var_names(family: str) -> list[str]:
             "animal_variance",
             "image_variance",
             "mito_variance",
+            "sigma_log_image_variance",
+            "sigma_log_mito_variance",
             "delta_mean",
             "delta_image_variance",
             "delta_mito_variance",
+        ]
+    if likelihood_name == "logitnormal":
+        return [
+            "genotype_mean",
+            "animal_logit_sigma",
+            "image_sigma",
+            "mito_sigma",
+            "sigma_log_image_sigma",
+            "sigma_log_mito_sigma",
+            "delta_mean",
         ]
     return [
         "genotype_mean",
         "kappa_animal",
         "kappa_image",
         "kappa_mito",
+        "sigma_log_kappa_image",
+        "sigma_log_kappa_mito",
         "boundary_mass",
         "one_given_boundary",
         "delta_mean",
@@ -233,8 +250,8 @@ def determine_condition_labels(condition_values: list[str]) -> tuple[str, str]:
     return ordered[0], ordered[1]
 
 
-def squeeze_beta_values(values: np.ndarray, epsilon: float = 1e-6) -> tuple[np.ndarray, bool]:
-    """Move exact boundary values into the open interval required by the Beta distribution.
+def squeeze_open_interval_values(values: np.ndarray, epsilon: float = 1e-6) -> tuple[np.ndarray, bool]:
+    """Move exact boundary values into the open interval required by open-interval models.
 
     Args:
         values (np.ndarray): Observed bounded metric values.
@@ -255,6 +272,92 @@ def squeeze_beta_values(values: np.ndarray, epsilon: float = 1e-6) -> tuple[np.n
         adjusted[one_mask] = 1.0 - epsilon
         touched = True
     return adjusted, touched
+
+
+def squeeze_beta_values(values: np.ndarray, epsilon: float = 1e-6) -> tuple[np.ndarray, bool]:
+    """Move exact boundary values into the open interval required by the Beta distribution.
+
+    Args:
+        values (np.ndarray): Observed bounded metric values.
+        epsilon (float): Small offset applied only when a value equals 0 or 1.
+
+    Returns:
+        tuple[np.ndarray, bool]: Adjusted values and whether any adjustment was applied.
+    """
+
+    return squeeze_open_interval_values(values=values, epsilon=epsilon)
+
+
+def logit_transform(values: np.ndarray, epsilon: float = 1e-6) -> np.ndarray:
+    """Compute a numerically stable logit transform for bounded values.
+
+    Args:
+        values (np.ndarray): Response-scale values expected to lie in ``[0, 1]``.
+        epsilon (float): Small clipping margin used to keep the transform finite.
+
+    Returns:
+        np.ndarray: Logit-transformed values on the real line.
+    """
+
+    clipped = np.clip(np.asarray(values, dtype=float), epsilon, 1.0 - epsilon)
+    return np.log(clipped) - np.log1p(-clipped)
+
+
+def sigmoid_tensor(values: pt.TensorVariable) -> pt.TensorVariable:
+    """Apply the logistic inverse transform to a PyTensor variable.
+
+    Args:
+        values (pt.TensorVariable): Real-valued PyTensor variable on the logit scale.
+
+    Returns:
+        pt.TensorVariable: Variable transformed back to the open interval ``(0, 1)``.
+    """
+
+    return pt.sigmoid(values)
+
+
+def logit_tensor(values: pt.TensorVariable, epsilon: float = 1e-6) -> pt.TensorVariable:
+    """Compute a numerically stable logit transform for a PyTensor variable.
+
+    Args:
+        values (pt.TensorVariable): PyTensor variable expected on the bounded response scale.
+        epsilon (float): Small clipping margin used to keep the transform finite.
+
+    Returns:
+        pt.TensorVariable: Variable transformed to the real line.
+    """
+
+    clipped = pt.clip(values, epsilon, 1.0 - epsilon)
+    return pt.log(clipped) - pt.log1p(-clipped)
+
+
+def logitnormal_response_moments(
+    logit_location: np.ndarray,
+    sigma: np.ndarray,
+    quadrature_points: int = LOGITNORMAL_QUADRATURE_POINTS,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Approximate response-scale mean and variance for a logit-normal distribution.
+
+    Args:
+        logit_location (np.ndarray): Logit-scale location parameter values.
+        sigma (np.ndarray): Positive logit-scale standard deviation values.
+        quadrature_points (int): Number of Gauss-Hermite quadrature points to use.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Response-scale mean and variance arrays.
+    """
+
+    nodes, weights = np.polynomial.hermite.hermgauss(quadrature_points)
+    location_array = np.asarray(logit_location, dtype=float)
+    sigma_array = np.asarray(sigma, dtype=float)
+    expand_shape = (quadrature_points,) + (1,) * location_array.ndim
+    scaled_nodes = np.sqrt(2.0) * nodes.reshape(expand_shape)
+    weights_array = weights.reshape(expand_shape)
+    response_samples = expit(location_array[None, ...] + sigma_array[None, ...] * scaled_nodes)
+    response_mean = np.sum(weights_array * response_samples, axis=0) / np.sqrt(np.pi)
+    response_second_moment = np.sum(weights_array * np.square(response_samples), axis=0) / np.sqrt(np.pi)
+    response_variance = np.clip(response_second_moment - np.square(response_mean), 0.0, np.inf)
+    return response_mean, response_variance
 
 
 def resolve_bounded_likelihood(values: np.ndarray, bounded_likelihood: str) -> str:
@@ -360,8 +463,8 @@ def prepare_metric_data(
     )
     if family == "bounded" and likelihood_name not in BOUNDED_LIKELIHOODS[1:]:
         raise ValueError(f"Unsupported bounded likelihood: {likelihood_name}")
-    if family == "bounded" and likelihood_name == "beta":
-        values, boundary_adjusted = squeeze_beta_values(values)
+    if family == "bounded" and likelihood_name in ("beta", "logitnormal"):
+        values, boundary_adjusted = squeeze_open_interval_values(values)
     observed_y = raw_values.copy()
 
     positive_scale = 1.0
@@ -453,6 +556,174 @@ def model_coords(data: PreparedMetricData) -> dict[str, list[Any] | np.ndarray]:
     }
 
 
+def mean_over_selected_units(values: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Average a draw-aligned array over selected units on its last axis.
+
+    Args:
+        values (np.ndarray): Array whose last axis indexes units such as animals or images.
+        mask (np.ndarray): Boolean mask selecting the units to average on the last axis.
+
+    Returns:
+        np.ndarray: Input draws averaged over the selected units.
+    """
+
+    selected_mask = np.asarray(mask, dtype=bool)
+    if not np.any(selected_mask):
+        raise ValueError("Expected at least one selected unit when averaging posterior draws.")
+    return np.mean(np.asarray(values, dtype=float)[..., selected_mask], axis=-1)
+
+
+def positive_response_scale_variance_components(
+    data: PreparedMetricData,
+    posterior: xr.Dataset,
+) -> dict[str, np.ndarray]:
+    """Compute response-scale positive-model variance components by genotype.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        posterior (xr.Dataset): Posterior dataset containing positive-model variance draws.
+
+    Returns:
+        dict[str, np.ndarray]: Draw-aligned WT, KO, and shared variance components.
+    """
+
+    variance_scale = data.positive_scale**2
+    image_variance_by_image = variance_scale * np.asarray(posterior["image_variance_by_image"], dtype=float)
+    mito_variance_by_image = variance_scale * np.asarray(posterior["mito_variance_by_image"], dtype=float)
+    animal_variance_shared = variance_scale * np.asarray(posterior["animal_variance"], dtype=float)
+    wt_images = data.genotype_idx_image == 0
+    ko_images = data.genotype_idx_image == 1
+    wt_image_variance = mean_over_selected_units(image_variance_by_image, wt_images)
+    ko_image_variance = mean_over_selected_units(image_variance_by_image, ko_images)
+    wt_mito_variance = mean_over_selected_units(mito_variance_by_image, wt_images)
+    ko_mito_variance = mean_over_selected_units(mito_variance_by_image, ko_images)
+    return {
+        "wt_image_variance": wt_image_variance,
+        "ko_image_variance": ko_image_variance,
+        "delta_image_variance": ko_image_variance - wt_image_variance,
+        "wt_mito_variance": wt_mito_variance,
+        "ko_mito_variance": ko_mito_variance,
+        "delta_mito_variance": ko_mito_variance - wt_mito_variance,
+        "animal_variance_shared": animal_variance_shared,
+    }
+
+
+def beta_response_scale_variance_components(
+    data: PreparedMetricData,
+    posterior: xr.Dataset,
+) -> dict[str, np.ndarray]:
+    """Compute response-scale Beta-family variance components by genotype.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        posterior (xr.Dataset): Posterior dataset containing bounded-model mean and kappa draws.
+
+    Returns:
+        dict[str, np.ndarray]: Draw-aligned WT, KO, and shared variance components.
+    """
+
+    animal_mean = np.asarray(posterior["animal_mean"], dtype=float)
+    image_mean = np.asarray(posterior["image_mean"], dtype=float)
+    kappa_animal = np.asarray(posterior["kappa_animal"], dtype=float)
+    kappa_image_by_image = np.asarray(posterior["kappa_image_by_image"], dtype=float)
+    kappa_mito_by_image = np.asarray(posterior["kappa_mito_by_image"], dtype=float)
+    wt_animals = data.genotype_idx_animal == 0
+    ko_animals = data.genotype_idx_animal == 1
+    wt_images = data.genotype_idx_image == 0
+    ko_images = data.genotype_idx_image == 1
+
+    animal_var_wt = mean_over_selected_units(
+        animal_mean[..., wt_animals] * (1.0 - animal_mean[..., wt_animals]),
+        np.ones(int(np.sum(wt_animals)), dtype=bool),
+    ) / (kappa_animal + 1.0)
+    animal_var_ko = mean_over_selected_units(
+        animal_mean[..., ko_animals] * (1.0 - animal_mean[..., ko_animals]),
+        np.ones(int(np.sum(ko_animals)), dtype=bool),
+    ) / (kappa_animal + 1.0)
+
+    animal_parent_mean_by_image = animal_mean[..., data.animal_idx_image]
+    image_variance_by_image = animal_parent_mean_by_image * (1.0 - animal_parent_mean_by_image)
+    image_variance_by_image = image_variance_by_image / (kappa_image_by_image + 1.0)
+    mito_variance_by_image = image_mean * (1.0 - image_mean)
+    mito_variance_by_image = mito_variance_by_image / (kappa_mito_by_image + 1.0)
+    wt_image_variance = mean_over_selected_units(image_variance_by_image, wt_images)
+    ko_image_variance = mean_over_selected_units(image_variance_by_image, ko_images)
+    wt_mito_variance = mean_over_selected_units(mito_variance_by_image, wt_images)
+    ko_mito_variance = mean_over_selected_units(mito_variance_by_image, ko_images)
+    return {
+        "wt_image_variance": wt_image_variance,
+        "ko_image_variance": ko_image_variance,
+        "delta_image_variance": ko_image_variance - wt_image_variance,
+        "wt_mito_variance": wt_mito_variance,
+        "ko_mito_variance": ko_mito_variance,
+        "delta_mito_variance": ko_mito_variance - wt_mito_variance,
+        "animal_variance_shared": 0.5 * (animal_var_wt + animal_var_ko),
+    }
+
+
+def logitnormal_response_scale_variance_components(
+    data: PreparedMetricData,
+    posterior: xr.Dataset,
+) -> dict[str, np.ndarray]:
+    """Compute response-scale logit-normal variance components by genotype.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        posterior (xr.Dataset): Posterior dataset containing logit-normal latent draws.
+
+    Returns:
+        dict[str, np.ndarray]: Draw-aligned WT, KO, and shared variance components.
+    """
+
+    animal_mean = np.asarray(posterior["animal_mean"], dtype=float)
+    image_mean = np.asarray(posterior["image_mean"], dtype=float)
+    image_logit_mean = np.asarray(posterior["image_logit_mean"], dtype=float)
+    mito_sigma_by_image = np.asarray(posterior["mito_sigma_by_image"], dtype=float)
+    wt_animals = data.genotype_idx_animal == 0
+    ko_animals = data.genotype_idx_animal == 1
+    wt_images = data.genotype_idx_image == 0
+    ko_images = data.genotype_idx_image == 1
+
+    animal_var_wt = np.var(animal_mean[..., wt_animals], axis=-1)
+    animal_var_ko = np.var(animal_mean[..., ko_animals], axis=-1)
+    image_var_wt = np.var(image_mean[..., wt_images], axis=-1)
+    image_var_ko = np.var(image_mean[..., ko_images], axis=-1)
+    _, mito_variance_by_image = logitnormal_response_moments(
+        logit_location=image_logit_mean,
+        sigma=mito_sigma_by_image,
+    )
+    wt_mito_variance = mean_over_selected_units(mito_variance_by_image, wt_images)
+    ko_mito_variance = mean_over_selected_units(mito_variance_by_image, ko_images)
+    return {
+        "wt_image_variance": image_var_wt,
+        "ko_image_variance": image_var_ko,
+        "delta_image_variance": image_var_ko - image_var_wt,
+        "wt_mito_variance": wt_mito_variance,
+        "ko_mito_variance": ko_mito_variance,
+        "delta_mito_variance": ko_mito_variance - wt_mito_variance,
+        "animal_variance_shared": 0.5 * (animal_var_wt + animal_var_ko),
+    }
+
+
+def bounded_response_scale_variance_components(
+    data: PreparedMetricData,
+    posterior: xr.Dataset,
+) -> dict[str, np.ndarray]:
+    """Compute response-scale bounded-model variance components by genotype.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        posterior (xr.Dataset): Posterior dataset containing bounded-model latent draws.
+
+    Returns:
+        dict[str, np.ndarray]: Draw-aligned WT, KO, and shared variance components.
+    """
+
+    if data.likelihood_name == "logitnormal":
+        return logitnormal_response_scale_variance_components(data=data, posterior=posterior)
+    return beta_response_scale_variance_components(data=data, posterior=posterior)
+
+
 def build_positive_model(data: PreparedMetricData) -> pm.Model:
     """Construct the Gamma hierarchy for positive continuous metrics.
 
@@ -483,12 +754,55 @@ def build_positive_model(data: PreparedMetricData) -> pm.Model:
             dims="genotype",
         )
         animal_variance = pm.HalfNormal("animal_variance", sigma=variance_scale)
-        image_variance = pm.HalfNormal("image_variance", sigma=variance_scale, dims="genotype")
-        mito_variance = pm.HalfNormal("mito_variance", sigma=variance_scale, dims="genotype")
+        log_image_variance_genotype = pm.Normal(
+            "log_image_variance_genotype",
+            mu=np.log(variance_scale),
+            sigma=1.5,
+            dims="genotype",
+        )
+        sigma_log_image_variance = pm.HalfNormal("sigma_log_image_variance", sigma=1.0)
+        image_variance_offset = pm.Normal("image_variance_offset", mu=0.0, sigma=1.0, dims="image")
+        log_mito_variance_genotype = pm.Normal(
+            "log_mito_variance_genotype",
+            mu=np.log(variance_scale),
+            sigma=1.5,
+            dims="genotype",
+        )
+        sigma_log_mito_variance = pm.HalfNormal("sigma_log_mito_variance", sigma=1.0)
+        mito_variance_offset = pm.Normal("mito_variance_offset", mu=0.0, sigma=1.0, dims="image")
+
+        image_variance = pm.Deterministic(
+            "image_variance",
+            pt.exp(log_image_variance_genotype),
+            dims="genotype",
+        )
+        image_variance_by_image = pm.Deterministic(
+            "image_variance_by_image",
+            pt.exp(log_image_variance_genotype[genotype_idx_image] + sigma_log_image_variance * image_variance_offset),
+            dims="image",
+        )
+        mito_variance = pm.Deterministic(
+            "mito_variance",
+            pt.exp(log_mito_variance_genotype),
+            dims="genotype",
+        )
+        mito_variance_by_image = pm.Deterministic(
+            "mito_variance_by_image",
+            pt.exp(log_mito_variance_genotype[genotype_idx_image] + sigma_log_mito_variance * mito_variance_offset),
+            dims="image",
+        )
 
         animal_sigma = pm.Deterministic("animal_sigma", pt.sqrt(animal_variance))
-        image_sigma = pm.Deterministic("image_sigma", pt.sqrt(image_variance), dims="genotype")
-        mito_sigma = pm.Deterministic("mito_sigma", pt.sqrt(mito_variance), dims="genotype")
+        image_sigma_by_image = pm.Deterministic(
+            "image_sigma_by_image",
+            pt.sqrt(image_variance_by_image),
+            dims="image",
+        )
+        mito_sigma_by_image = pm.Deterministic(
+            "mito_sigma_by_image",
+            pt.sqrt(mito_variance_by_image),
+            dims="image",
+        )
 
         animal_mean = pm.Gamma(
             "animal_mean",
@@ -499,12 +813,12 @@ def build_positive_model(data: PreparedMetricData) -> pm.Model:
         image_mean = pm.Gamma(
             "image_mean",
             mu=animal_mean[animal_idx_image],
-            sigma=image_sigma[genotype_idx_image],
+            sigma=image_sigma_by_image,
             dims="image",
         )
         if data.likelihood_name == "lognormal":
             observed_mean = image_mean[image_idx_obs]
-            observed_variance = mito_variance[genotype_idx_obs]
+            observed_variance = mito_variance_by_image[image_idx_obs]
             log_sigma_squared = pt.log1p(
                 observed_variance / pt.clip(pt.square(observed_mean), SMALL_VALUE, np.inf)
             )
@@ -521,7 +835,7 @@ def build_positive_model(data: PreparedMetricData) -> pm.Model:
             pm.Gamma(
                 "observed_metric",
                 mu=image_mean[image_idx_obs],
-                sigma=mito_sigma[genotype_idx_obs],
+                sigma=mito_sigma_by_image[image_idx_obs],
                 observed=data.y,
                 dims="obs_id",
             )
@@ -534,7 +848,7 @@ def build_positive_model(data: PreparedMetricData) -> pm.Model:
 
 
 def build_bounded_model(data: PreparedMetricData) -> pm.Model:
-    """Construct the Beta hierarchy for bounded shape metrics.
+    """Construct the bounded hierarchy for shape metrics on the original response scale.
 
     Args:
         data (PreparedMetricData): Prepared metric-specific arrays and labels.
@@ -555,18 +869,122 @@ def build_bounded_model(data: PreparedMetricData) -> pm.Model:
         genotype_idx_image = pm.Data("genotype_idx_image", data.genotype_idx_image, dims="image")
 
         genotype_mean = pm.Beta("genotype_mean", alpha=2.0, beta=2.0, dims="genotype")
+        if data.likelihood_name == "logitnormal":
+            genotype_logit_mean = pm.Deterministic(
+                "genotype_logit_mean",
+                logit_tensor(genotype_mean),
+                dims="genotype",
+            )
+            animal_logit_sigma = pm.HalfNormal("animal_logit_sigma", sigma=0.75)
+            log_image_sigma_genotype = pm.Normal(
+                "log_image_sigma_genotype",
+                mu=np.log(0.35),
+                sigma=1.0,
+                dims="genotype",
+            )
+            sigma_log_image_sigma = pm.HalfNormal("sigma_log_image_sigma", sigma=0.5)
+            image_sigma_offset = pm.Normal("image_sigma_offset", mu=0.0, sigma=1.0, dims="image")
+            log_mito_sigma_genotype = pm.Normal(
+                "log_mito_sigma_genotype",
+                mu=np.log(0.35),
+                sigma=1.0,
+                dims="genotype",
+            )
+            sigma_log_mito_sigma = pm.HalfNormal("sigma_log_mito_sigma", sigma=0.5)
+            mito_sigma_offset = pm.Normal("mito_sigma_offset", mu=0.0, sigma=1.0, dims="image")
+
+            image_sigma = pm.Deterministic(
+                "image_sigma",
+                pt.exp(log_image_sigma_genotype),
+                dims="genotype",
+            )
+            image_sigma_by_image = pm.Deterministic(
+                "image_sigma_by_image",
+                pt.exp(log_image_sigma_genotype[genotype_idx_image] + sigma_log_image_sigma * image_sigma_offset),
+                dims="image",
+            )
+            mito_sigma = pm.Deterministic(
+                "mito_sigma",
+                pt.exp(log_mito_sigma_genotype),
+                dims="genotype",
+            )
+            mito_sigma_by_image = pm.Deterministic(
+                "mito_sigma_by_image",
+                pt.exp(log_mito_sigma_genotype[genotype_idx_image] + sigma_log_mito_sigma * mito_sigma_offset),
+                dims="image",
+            )
+
+            animal_logit_mean = pm.Normal(
+                "animal_logit_mean",
+                mu=genotype_logit_mean[genotype_idx_animal],
+                sigma=animal_logit_sigma,
+                dims="animal",
+            )
+            animal_mean = pm.Deterministic(
+                "animal_mean",
+                sigmoid_tensor(animal_logit_mean),
+                dims="animal",
+            )
+            image_logit_mean = pm.Normal(
+                "image_logit_mean",
+                mu=animal_logit_mean[animal_idx_image],
+                sigma=image_sigma_by_image,
+                dims="image",
+            )
+            image_mean = pm.Deterministic(
+                "image_mean",
+                sigmoid_tensor(image_logit_mean),
+                dims="image",
+            )
+            pm.LogitNormal(
+                "observed_metric",
+                mu=image_logit_mean[image_idx_obs],
+                sigma=mito_sigma_by_image[image_idx_obs],
+                observed=data.y,
+                dims="obs_id",
+            )
+            pm.Deterministic("delta_mean", genotype_mean[1] - genotype_mean[0])
+            return model
 
         log_kappa_animal = pm.Normal("log_kappa_animal", mu=np.log(20.0), sigma=1.5)
-        log_kappa_image = pm.Normal(
-            "log_kappa_image", mu=np.log(20.0), sigma=1.5, dims="genotype"
+        log_kappa_image_genotype = pm.Normal(
+            "log_kappa_image_genotype",
+            mu=np.log(20.0),
+            sigma=1.5,
+            dims="genotype",
         )
-        log_kappa_mito = pm.Normal(
-            "log_kappa_mito", mu=np.log(20.0), sigma=1.5, dims="genotype"
+        sigma_log_kappa_image = pm.HalfNormal("sigma_log_kappa_image", sigma=1.0)
+        kappa_image_offset = pm.Normal("kappa_image_offset", mu=0.0, sigma=1.0, dims="image")
+        log_kappa_mito_genotype = pm.Normal(
+            "log_kappa_mito_genotype",
+            mu=np.log(20.0),
+            sigma=1.5,
+            dims="genotype",
         )
+        sigma_log_kappa_mito = pm.HalfNormal("sigma_log_kappa_mito", sigma=1.0)
+        kappa_mito_offset = pm.Normal("kappa_mito_offset", mu=0.0, sigma=1.0, dims="image")
 
         kappa_animal = pm.Deterministic("kappa_animal", pt.exp(log_kappa_animal))
-        kappa_image = pm.Deterministic("kappa_image", pt.exp(log_kappa_image), dims="genotype")
-        kappa_mito = pm.Deterministic("kappa_mito", pt.exp(log_kappa_mito), dims="genotype")
+        kappa_image = pm.Deterministic(
+            "kappa_image",
+            pt.exp(log_kappa_image_genotype),
+            dims="genotype",
+        )
+        kappa_image_by_image = pm.Deterministic(
+            "kappa_image_by_image",
+            pt.exp(log_kappa_image_genotype[genotype_idx_image] + sigma_log_kappa_image * kappa_image_offset),
+            dims="image",
+        )
+        kappa_mito = pm.Deterministic(
+            "kappa_mito",
+            pt.exp(log_kappa_mito_genotype),
+            dims="genotype",
+        )
+        kappa_mito_by_image = pm.Deterministic(
+            "kappa_mito_by_image",
+            pt.exp(log_kappa_mito_genotype[genotype_idx_image] + sigma_log_kappa_mito * kappa_mito_offset),
+            dims="image",
+        )
 
         animal_alpha = pt.clip(genotype_mean[genotype_idx_animal] * kappa_animal, SMALL_VALUE, np.inf)
         animal_beta = pt.clip(
@@ -575,13 +993,12 @@ def build_bounded_model(data: PreparedMetricData) -> pm.Model:
         animal_mean = pm.Beta("animal_mean", alpha=animal_alpha, beta=animal_beta, dims="animal")
 
         image_parent_mean = animal_mean[animal_idx_image]
-        image_kappa = kappa_image[genotype_idx_image]
-        image_alpha = pt.clip(image_parent_mean * image_kappa, SMALL_VALUE, np.inf)
-        image_beta = pt.clip((1.0 - image_parent_mean) * image_kappa, SMALL_VALUE, np.inf)
+        image_alpha = pt.clip(image_parent_mean * kappa_image_by_image, SMALL_VALUE, np.inf)
+        image_beta = pt.clip((1.0 - image_parent_mean) * kappa_image_by_image, SMALL_VALUE, np.inf)
         image_mean = pm.Beta("image_mean", alpha=image_alpha, beta=image_beta, dims="image")
 
         mito_parent_mean = image_mean[image_idx_obs]
-        mito_kappa = kappa_mito[genotype_idx_obs]
+        mito_kappa = kappa_mito_by_image[image_idx_obs]
         mito_alpha = pt.clip(mito_parent_mean * mito_kappa, SMALL_VALUE, np.inf)
         mito_beta = pt.clip((1.0 - mito_parent_mean) * mito_kappa, SMALL_VALUE, np.inf)
         if data.likelihood_name == "zero_one_inflated_beta":
@@ -719,42 +1136,38 @@ def attach_response_scale_posterior(
     response_variables: dict[str, xr.DataArray] = {}
     if data.family == "positive":
         mean_scale = data.positive_scale
-        variance_scale = data.positive_scale**2
+        variance_draws = positive_response_scale_variance_components(data=data, posterior=posterior)
         response_variables = {
             "genotype_mean_response": posterior["genotype_mean"] * mean_scale,
             "delta_mean_response": posterior["delta_mean"] * mean_scale,
-            "animal_variance_shared_response": posterior["animal_variance"] * variance_scale,
-            "image_variance_response": posterior["image_variance"] * variance_scale,
-            "mito_variance_response": posterior["mito_variance"] * variance_scale,
-            "delta_image_variance_response": posterior["delta_image_variance"] * variance_scale,
-            "delta_mito_variance_response": posterior["delta_mito_variance"] * variance_scale,
+            "animal_variance_shared_response": xr.DataArray(
+                variance_draws["animal_variance_shared"],
+                dims=("chain", "draw"),
+                coords={"chain": chain_coords, "draw": draw_coords},
+            ),
+            "image_variance_response": xr.DataArray(
+                np.stack([variance_draws["wt_image_variance"], variance_draws["ko_image_variance"]], axis=-1),
+                dims=("chain", "draw", "genotype"),
+                coords={"chain": chain_coords, "draw": draw_coords, "genotype": genotype_coords},
+            ),
+            "mito_variance_response": xr.DataArray(
+                np.stack([variance_draws["wt_mito_variance"], variance_draws["ko_mito_variance"]], axis=-1),
+                dims=("chain", "draw", "genotype"),
+                coords={"chain": chain_coords, "draw": draw_coords, "genotype": genotype_coords},
+            ),
+            "delta_image_variance_response": xr.DataArray(
+                variance_draws["delta_image_variance"],
+                dims=("chain", "draw"),
+                coords={"chain": chain_coords, "draw": draw_coords},
+            ),
+            "delta_mito_variance_response": xr.DataArray(
+                variance_draws["delta_mito_variance"],
+                dims=("chain", "draw"),
+                coords={"chain": chain_coords, "draw": draw_coords},
+            ),
         }
     else:
-        animal_mean = np.asarray(posterior["animal_mean"])
-        image_mean = np.asarray(posterior["image_mean"])
-        kappa_animal = np.asarray(posterior["kappa_animal"])
-        kappa_image = np.asarray(posterior["kappa_image"])
-        kappa_mito = np.asarray(posterior["kappa_mito"])
-
-        wt_animals = data.genotype_idx_animal == 0
-        ko_animals = data.genotype_idx_animal == 1
-        wt_images = data.genotype_idx_image == 0
-        ko_images = data.genotype_idx_image == 1
-
-        animal_var_wt = np.mean(animal_mean[..., wt_animals] * (1.0 - animal_mean[..., wt_animals]), axis=-1)
-        animal_var_ko = np.mean(animal_mean[..., ko_animals] * (1.0 - animal_mean[..., ko_animals]), axis=-1)
-        animal_var_wt = animal_var_wt / (kappa_animal + 1.0)
-        animal_var_ko = animal_var_ko / (kappa_animal + 1.0)
-
-        image_var_wt = np.mean(animal_mean[..., wt_animals] * (1.0 - animal_mean[..., wt_animals]), axis=-1)
-        image_var_ko = np.mean(animal_mean[..., ko_animals] * (1.0 - animal_mean[..., ko_animals]), axis=-1)
-        image_var_wt = image_var_wt / (kappa_image[..., 0] + 1.0)
-        image_var_ko = image_var_ko / (kappa_image[..., 1] + 1.0)
-
-        mito_var_wt = np.mean(image_mean[..., wt_images] * (1.0 - image_mean[..., wt_images]), axis=-1)
-        mito_var_ko = np.mean(image_mean[..., ko_images] * (1.0 - image_mean[..., ko_images]), axis=-1)
-        mito_var_wt = mito_var_wt / (kappa_mito[..., 0] + 1.0)
-        mito_var_ko = mito_var_ko / (kappa_mito[..., 1] + 1.0)
+        variance_draws = bounded_response_scale_variance_components(data=data, posterior=posterior)
 
         genotype_mean_response = xr.DataArray(
             np.asarray(posterior["genotype_mean"]),
@@ -762,12 +1175,12 @@ def attach_response_scale_posterior(
             coords={"chain": chain_coords, "draw": draw_coords, "genotype": genotype_coords},
         )
         image_variance_response = xr.DataArray(
-            np.stack([image_var_wt, image_var_ko], axis=-1),
+            np.stack([variance_draws["wt_image_variance"], variance_draws["ko_image_variance"]], axis=-1),
             dims=("chain", "draw", "genotype"),
             coords={"chain": chain_coords, "draw": draw_coords, "genotype": genotype_coords},
         )
         mito_variance_response = xr.DataArray(
-            np.stack([mito_var_wt, mito_var_ko], axis=-1),
+            np.stack([variance_draws["wt_mito_variance"], variance_draws["ko_mito_variance"]], axis=-1),
             dims=("chain", "draw", "genotype"),
             coords={"chain": chain_coords, "draw": draw_coords, "genotype": genotype_coords},
         )
@@ -775,19 +1188,19 @@ def attach_response_scale_posterior(
             "genotype_mean_response": genotype_mean_response,
             "delta_mean_response": posterior["delta_mean"],
             "animal_variance_shared_response": xr.DataArray(
-                0.5 * (animal_var_wt + animal_var_ko),
+                variance_draws["animal_variance_shared"],
                 dims=("chain", "draw"),
                 coords={"chain": chain_coords, "draw": draw_coords},
             ),
             "image_variance_response": image_variance_response,
             "mito_variance_response": mito_variance_response,
             "delta_image_variance_response": xr.DataArray(
-                image_var_ko - image_var_wt,
+                variance_draws["delta_image_variance"],
                 dims=("chain", "draw"),
                 coords={"chain": chain_coords, "draw": draw_coords},
             ),
             "delta_mito_variance_response": xr.DataArray(
-                mito_var_ko - mito_var_wt,
+                variance_draws["delta_mito_variance"],
                 dims=("chain", "draw"),
                 coords={"chain": chain_coords, "draw": draw_coords},
             ),
@@ -894,23 +1307,20 @@ def gamma_variance_summaries(data: PreparedMetricData, idata: az.InferenceData) 
         dict[str, np.ndarray]: Flattened variance draws for WT, KO, and deltas.
     """
 
-    posterior = idata.posterior
-    variance_scale = data.positive_scale**2
-    image_variance = flatten_draws(posterior["image_variance"])
-    mito_variance = flatten_draws(posterior["mito_variance"])
+    variance_draws = positive_response_scale_variance_components(data=data, posterior=idata.posterior)
     return {
-        "wt_image_variance": variance_scale * image_variance[:, 0],
-        "ko_image_variance": variance_scale * image_variance[:, 1],
-        "delta_image_variance": variance_scale * (image_variance[:, 1] - image_variance[:, 0]),
-        "wt_mito_variance": variance_scale * mito_variance[:, 0],
-        "ko_mito_variance": variance_scale * mito_variance[:, 1],
-        "delta_mito_variance": variance_scale * (mito_variance[:, 1] - mito_variance[:, 0]),
-        "animal_variance_shared": variance_scale * flatten_draws(posterior["animal_variance"]),
+        "wt_image_variance": flatten_draws(variance_draws["wt_image_variance"]),
+        "ko_image_variance": flatten_draws(variance_draws["ko_image_variance"]),
+        "delta_image_variance": flatten_draws(variance_draws["delta_image_variance"]),
+        "wt_mito_variance": flatten_draws(variance_draws["wt_mito_variance"]),
+        "ko_mito_variance": flatten_draws(variance_draws["ko_mito_variance"]),
+        "delta_mito_variance": flatten_draws(variance_draws["delta_mito_variance"]),
+        "animal_variance_shared": flatten_draws(variance_draws["animal_variance_shared"]),
     }
 
 
 def beta_variance_summaries(data: PreparedMetricData, idata: az.InferenceData) -> dict[str, np.ndarray]:
-    """Compute response-scale Beta variance summaries averaged within genotype.
+    """Compute response-scale bounded variance summaries averaged within genotype.
 
     Args:
         data (PreparedMetricData): Prepared metric-specific arrays and labels.
@@ -920,41 +1330,15 @@ def beta_variance_summaries(data: PreparedMetricData, idata: az.InferenceData) -
         dict[str, np.ndarray]: Flattened variance draws for WT, KO, and deltas.
     """
 
-    posterior = idata.posterior
-    animal_mean = flatten_draws(posterior["animal_mean"])
-    image_mean = flatten_draws(posterior["image_mean"])
-    kappa_animal = flatten_draws(posterior["kappa_animal"])
-    kappa_image = flatten_draws(posterior["kappa_image"])
-    kappa_mito = flatten_draws(posterior["kappa_mito"])
-
-    wt_animals = data.genotype_idx_animal == 0
-    ko_animals = data.genotype_idx_animal == 1
-    wt_images = data.genotype_idx_image == 0
-    ko_images = data.genotype_idx_image == 1
-
-    animal_var_wt = np.mean(animal_mean[:, wt_animals] * (1.0 - animal_mean[:, wt_animals]), axis=1)
-    animal_var_ko = np.mean(animal_mean[:, ko_animals] * (1.0 - animal_mean[:, ko_animals]), axis=1)
-    animal_var_wt = animal_var_wt / (kappa_animal + 1.0)
-    animal_var_ko = animal_var_ko / (kappa_animal + 1.0)
-
-    image_var_wt = np.mean(animal_mean[:, wt_animals] * (1.0 - animal_mean[:, wt_animals]), axis=1)
-    image_var_ko = np.mean(animal_mean[:, ko_animals] * (1.0 - animal_mean[:, ko_animals]), axis=1)
-    image_var_wt = image_var_wt / (kappa_image[:, 0] + 1.0)
-    image_var_ko = image_var_ko / (kappa_image[:, 1] + 1.0)
-
-    mito_var_wt = np.mean(image_mean[:, wt_images] * (1.0 - image_mean[:, wt_images]), axis=1)
-    mito_var_ko = np.mean(image_mean[:, ko_images] * (1.0 - image_mean[:, ko_images]), axis=1)
-    mito_var_wt = mito_var_wt / (kappa_mito[:, 0] + 1.0)
-    mito_var_ko = mito_var_ko / (kappa_mito[:, 1] + 1.0)
-
+    variance_draws = bounded_response_scale_variance_components(data=data, posterior=idata.posterior)
     return {
-        "wt_image_variance": image_var_wt,
-        "ko_image_variance": image_var_ko,
-        "delta_image_variance": image_var_ko - image_var_wt,
-        "wt_mito_variance": mito_var_wt,
-        "ko_mito_variance": mito_var_ko,
-        "delta_mito_variance": mito_var_ko - mito_var_wt,
-        "animal_variance_shared": 0.5 * (animal_var_wt + animal_var_ko),
+        "wt_image_variance": flatten_draws(variance_draws["wt_image_variance"]),
+        "ko_image_variance": flatten_draws(variance_draws["ko_image_variance"]),
+        "delta_image_variance": flatten_draws(variance_draws["delta_image_variance"]),
+        "wt_mito_variance": flatten_draws(variance_draws["wt_mito_variance"]),
+        "ko_mito_variance": flatten_draws(variance_draws["ko_mito_variance"]),
+        "delta_mito_variance": flatten_draws(variance_draws["delta_mito_variance"]),
+        "animal_variance_shared": flatten_draws(variance_draws["animal_variance_shared"]),
     }
 
 
@@ -1088,8 +1472,8 @@ def simulate_predictive_subset(
     parent_mean = image_mean[:, obs_image_idx]
 
     if data.family == "positive":
-        mito_variance = flatten_draws(idata.posterior["mito_variance"])[draw_indices]
-        obs_variance = mito_variance[:, obs_genotype_idx]
+        mito_variance_by_image = flatten_draws(idata.posterior["mito_variance_by_image"])[draw_indices]
+        obs_variance = mito_variance_by_image[:, obs_image_idx]
         if data.likelihood_name == "lognormal":
             log_mu, log_sigma = lognormal_mu_sigma_from_mean_variance(
                 mean=parent_mean,
@@ -1100,8 +1484,15 @@ def simulate_predictive_subset(
         gamma_scale = np.clip(obs_variance, SMALL_VALUE, None) / np.clip(parent_mean, SMALL_VALUE, None)
         return data.positive_scale * rng.gamma(shape=gamma_shape, scale=gamma_scale)
 
-    kappa_mito = flatten_draws(idata.posterior["kappa_mito"])[draw_indices]
-    obs_kappa = kappa_mito[:, obs_genotype_idx]
+    if data.likelihood_name == "logitnormal":
+        image_logit_mean = flatten_draws(idata.posterior["image_logit_mean"])[draw_indices]
+        mito_sigma_by_image = flatten_draws(idata.posterior["mito_sigma_by_image"])[draw_indices]
+        obs_logit_mean = image_logit_mean[:, obs_image_idx]
+        obs_sigma = mito_sigma_by_image[:, obs_image_idx]
+        return expit(rng.normal(loc=obs_logit_mean, scale=obs_sigma))
+
+    kappa_mito_by_image = flatten_draws(idata.posterior["kappa_mito_by_image"])[draw_indices]
+    obs_kappa = kappa_mito_by_image[:, obs_image_idx]
     alpha = np.clip(parent_mean * obs_kappa, SMALL_VALUE, None)
     beta = np.clip((1.0 - parent_mean) * obs_kappa, SMALL_VALUE, None)
     beta_predictive = rng.beta(alpha, beta)
@@ -1292,10 +1683,10 @@ def summarize_model(
 
     if data.family == "positive":
         variance_draws = gamma_variance_summaries(data, idata)
-        diagnostic_names = diagnostic_var_names(data.family)
+        diagnostic_names = diagnostic_var_names(data.family, data.likelihood_name)
     else:
         variance_draws = beta_variance_summaries(data, idata)
-        diagnostic_names = diagnostic_var_names(data.family)
+        diagnostic_names = diagnostic_var_names(data.family, data.likelihood_name)
 
     mean_scale = data.positive_scale if data.family == "positive" else 1.0
 
