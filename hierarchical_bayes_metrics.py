@@ -15,7 +15,7 @@ import pymc as pm
 import pytensor.tensor as pt
 import xarray as xr
 from scipy.special import expit
-from scipy.stats import wasserstein_distance
+from scipy.stats import skewnorm, wasserstein_distance
 
 from hierarchical_bayes_config import (
     BayesFitConfig,
@@ -34,7 +34,7 @@ TRACE_DIR = Path("/workspaces/mito-counter/data/Calpaine_3/results/bayes_traces"
 DEFAULT_POSITIVE_LIKELIHOOD = "gamma"
 DEFAULT_BOUNDED_LIKELIHOOD = "auto"
 POSITIVE_LIKELIHOODS = ("gamma", "lognormal")
-BOUNDED_LIKELIHOODS = ("auto", "beta", "zero_one_inflated_beta", "logitnormal")
+BOUNDED_LIKELIHOODS = ("auto", "beta", "zero_one_inflated_beta", "logitnormal", "logit_skew_normal")
 
 POSITIVE_METRICS = (
     "Area",
@@ -57,6 +57,8 @@ REFIT_ESS_THRESHOLD = 400.0
 PPC_RELATIVE_ERROR_THRESHOLD = 0.35
 PPC_DENSITY_BIN_LIMIT = 60
 LOGITNORMAL_QUADRATURE_POINTS = 20
+LOGIT_SKEW_NORMAL_QUANTILE_POINTS = 24
+LOGIT_SKEW_NORMAL_MOMENT_CHUNK_SIZE = 4096
 
 
 @dataclass(frozen=True)
@@ -178,6 +180,17 @@ def diagnostic_var_names(family: str, likelihood_name: str = "") -> list[str]:
             "mito_sigma",
             "sigma_log_image_sigma",
             "sigma_log_mito_sigma",
+            "delta_mean",
+        ]
+    if likelihood_name == "logit_skew_normal":
+        return [
+            "genotype_mean",
+            "animal_logit_sigma",
+            "image_sigma",
+            "mito_sigma",
+            "sigma_log_image_sigma",
+            "sigma_log_mito_sigma",
+            "skew_alpha",
             "delta_mean",
         ]
     return [
@@ -360,6 +373,117 @@ def logitnormal_response_moments(
     return response_mean, response_variance
 
 
+def logit_skew_normal_logp(
+    value: pt.TensorVariable,
+    mu: pt.TensorVariable,
+    sigma: pt.TensorVariable,
+    alpha: pt.TensorVariable,
+) -> pt.TensorVariable:
+    """Compute the bounded log-probability for a logit-skew-normal observation.
+
+    Args:
+        value (pt.TensorVariable): Observed response-scale values expected in ``(0, 1)``.
+        mu (pt.TensorVariable): Location parameter on the logit scale.
+        sigma (pt.TensorVariable): Positive scale parameter on the logit scale.
+        alpha (pt.TensorVariable): Skewness parameter on the logit scale.
+
+    Returns:
+        pt.TensorVariable: Elementwise log-probability on the bounded response scale.
+    """
+
+    logit_value = logit_tensor(value)
+    base_logp = pm.logp(pm.SkewNormal.dist(mu=mu, sigma=sigma, alpha=alpha), logit_value)
+    log_jacobian = -pt.log(value) - pt.log1p(-value)
+    in_support = pt.and_(pt.gt(value, 0.0), pt.lt(value, 1.0))
+    return pt.switch(in_support, base_logp + log_jacobian, -np.inf)
+
+
+def logit_skew_normal_random(
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    alpha: np.ndarray,
+    rng: np.random.Generator | None = None,
+    size: tuple[int, ...] | int | None = None,
+) -> np.ndarray:
+    """Draw random samples from a logit-skew-normal distribution.
+
+    Args:
+        mu (np.ndarray): Location parameter on the logit scale.
+        sigma (np.ndarray): Positive scale parameter on the logit scale.
+        alpha (np.ndarray): Skewness parameter on the logit scale.
+        rng (np.random.Generator | None): Random number generator supplied by PyMC.
+        size (tuple[int, ...] | int | None): Optional output size requested by PyMC.
+
+    Returns:
+        np.ndarray: Random draws transformed back onto the open interval ``(0, 1)``.
+    """
+
+    random_generator = np.random.default_rng() if rng is None else rng
+    logit_draws = skewnorm.rvs(
+        a=np.asarray(alpha, dtype=float),
+        loc=np.asarray(mu, dtype=float),
+        scale=np.asarray(sigma, dtype=float),
+        size=size,
+        random_state=random_generator,
+    )
+    return expit(logit_draws)
+
+
+def logit_skew_normal_response_moments(
+    logit_location: np.ndarray,
+    sigma: np.ndarray,
+    alpha: np.ndarray,
+    quantile_points: int = LOGIT_SKEW_NORMAL_QUANTILE_POINTS,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Approximate response-scale mean and variance for a logit-skew-normal distribution.
+
+    Args:
+        logit_location (np.ndarray): Logit-scale location parameter values.
+        sigma (np.ndarray): Positive logit-scale standard deviation values.
+        alpha (np.ndarray): Logit-scale skewness parameter values.
+        quantile_points (int): Number of midpoint quantile nodes used for approximation.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Response-scale mean and variance arrays.
+    """
+
+    probabilities = (np.arange(quantile_points, dtype=float) + 0.5) / float(quantile_points)
+    location_array = np.asarray(logit_location, dtype=float)
+    sigma_array = np.asarray(sigma, dtype=float)
+    alpha_array = np.asarray(alpha, dtype=float)
+    while sigma_array.ndim < location_array.ndim:
+        sigma_array = sigma_array[..., None]
+    while alpha_array.ndim < location_array.ndim:
+        alpha_array = alpha_array[..., None]
+    sigma_array = np.broadcast_to(sigma_array, location_array.shape)
+    alpha_array = np.broadcast_to(alpha_array, location_array.shape)
+
+    flat_location = location_array.reshape(-1)
+    flat_sigma = sigma_array.reshape(-1)
+    flat_alpha = alpha_array.reshape(-1)
+    flat_mean = np.empty_like(flat_location)
+    flat_variance = np.empty_like(flat_location)
+
+    for start_index in range(0, flat_location.size, LOGIT_SKEW_NORMAL_MOMENT_CHUNK_SIZE):
+        stop_index = min(start_index + LOGIT_SKEW_NORMAL_MOMENT_CHUNK_SIZE, flat_location.size)
+        chunk_location = flat_location[start_index:stop_index]
+        chunk_sigma = flat_sigma[start_index:stop_index]
+        chunk_alpha = flat_alpha[start_index:stop_index]
+        logit_samples = skewnorm.ppf(
+            probabilities[:, None],
+            a=chunk_alpha[None, :],
+            loc=chunk_location[None, :],
+            scale=chunk_sigma[None, :],
+        )
+        response_samples = expit(logit_samples)
+        flat_mean[start_index:stop_index] = np.mean(response_samples, axis=0)
+        flat_variance[start_index:stop_index] = np.var(response_samples, axis=0)
+
+    response_mean = flat_mean.reshape(location_array.shape)
+    response_variance = np.clip(flat_variance.reshape(location_array.shape), 0.0, np.inf)
+    return response_mean, response_variance
+
+
 def resolve_bounded_likelihood(values: np.ndarray, bounded_likelihood: str) -> str:
     """Resolve the bounded-data likelihood choice for one metric subset.
 
@@ -463,7 +587,7 @@ def prepare_metric_data(
     )
     if family == "bounded" and likelihood_name not in BOUNDED_LIKELIHOODS[1:]:
         raise ValueError(f"Unsupported bounded likelihood: {likelihood_name}")
-    if family == "bounded" and likelihood_name in ("beta", "logitnormal"):
+    if family == "bounded" and likelihood_name in ("beta", "logitnormal", "logit_skew_normal"):
         values, boundary_adjusted = squeeze_open_interval_values(values)
     observed_y = raw_values.copy()
 
@@ -705,6 +829,52 @@ def logitnormal_response_scale_variance_components(
     }
 
 
+def logit_skew_normal_response_scale_variance_components(
+    data: PreparedMetricData,
+    posterior: xr.Dataset,
+) -> dict[str, np.ndarray]:
+    """Compute response-scale logit-skew-normal variance components by genotype.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        posterior (xr.Dataset): Posterior dataset containing logit-skew-normal latent draws.
+
+    Returns:
+        dict[str, np.ndarray]: Draw-aligned WT, KO, and shared variance components.
+    """
+
+    animal_mean = np.asarray(posterior["animal_mean"], dtype=float)
+    image_mean = np.asarray(posterior["image_mean"], dtype=float)
+    image_logit_mean = np.asarray(posterior["image_logit_mean"], dtype=float)
+    mito_sigma_by_image = np.asarray(posterior["mito_sigma_by_image"], dtype=float)
+    skew_alpha = np.asarray(posterior["skew_alpha"], dtype=float)
+    wt_animals = data.genotype_idx_animal == 0
+    ko_animals = data.genotype_idx_animal == 1
+    wt_images = data.genotype_idx_image == 0
+    ko_images = data.genotype_idx_image == 1
+
+    animal_var_wt = np.var(animal_mean[..., wt_animals], axis=-1)
+    animal_var_ko = np.var(animal_mean[..., ko_animals], axis=-1)
+    image_var_wt = np.var(image_mean[..., wt_images], axis=-1)
+    image_var_ko = np.var(image_mean[..., ko_images], axis=-1)
+    _, mito_variance_by_image = logit_skew_normal_response_moments(
+        logit_location=image_logit_mean,
+        sigma=mito_sigma_by_image,
+        alpha=skew_alpha,
+    )
+    wt_mito_variance = mean_over_selected_units(mito_variance_by_image, wt_images)
+    ko_mito_variance = mean_over_selected_units(mito_variance_by_image, ko_images)
+    return {
+        "wt_image_variance": image_var_wt,
+        "ko_image_variance": image_var_ko,
+        "delta_image_variance": image_var_ko - image_var_wt,
+        "wt_mito_variance": wt_mito_variance,
+        "ko_mito_variance": ko_mito_variance,
+        "delta_mito_variance": ko_mito_variance - wt_mito_variance,
+        "animal_variance_shared": 0.5 * (animal_var_wt + animal_var_ko),
+    }
+
+
 def bounded_response_scale_variance_components(
     data: PreparedMetricData,
     posterior: xr.Dataset,
@@ -721,6 +891,8 @@ def bounded_response_scale_variance_components(
 
     if data.likelihood_name == "logitnormal":
         return logitnormal_response_scale_variance_components(data=data, posterior=posterior)
+    if data.likelihood_name == "logit_skew_normal":
+        return logit_skew_normal_response_scale_variance_components(data=data, posterior=posterior)
     return beta_response_scale_variance_components(data=data, posterior=posterior)
 
 
@@ -869,7 +1041,7 @@ def build_bounded_model(data: PreparedMetricData) -> pm.Model:
         genotype_idx_image = pm.Data("genotype_idx_image", data.genotype_idx_image, dims="image")
 
         genotype_mean = pm.Beta("genotype_mean", alpha=2.0, beta=2.0, dims="genotype")
-        if data.likelihood_name == "logitnormal":
+        if data.likelihood_name in ("logitnormal", "logit_skew_normal"):
             genotype_logit_mean = pm.Deterministic(
                 "genotype_logit_mean",
                 logit_tensor(genotype_mean),
@@ -936,13 +1108,26 @@ def build_bounded_model(data: PreparedMetricData) -> pm.Model:
                 sigmoid_tensor(image_logit_mean),
                 dims="image",
             )
-            pm.LogitNormal(
-                "observed_metric",
-                mu=image_logit_mean[image_idx_obs],
-                sigma=mito_sigma_by_image[image_idx_obs],
-                observed=data.y,
-                dims="obs_id",
-            )
+            if data.likelihood_name == "logit_skew_normal":
+                skew_alpha = pm.Normal("skew_alpha", mu=0.0, sigma=2.0)
+                pm.CustomDist(
+                    "observed_metric",
+                    image_logit_mean[image_idx_obs],
+                    mito_sigma_by_image[image_idx_obs],
+                    skew_alpha,
+                    logp=logit_skew_normal_logp,
+                    random=logit_skew_normal_random,
+                    observed=data.y,
+                    dims="obs_id",
+                )
+            else:
+                pm.LogitNormal(
+                    "observed_metric",
+                    mu=image_logit_mean[image_idx_obs],
+                    sigma=mito_sigma_by_image[image_idx_obs],
+                    observed=data.y,
+                    dims="obs_id",
+                )
             pm.Deterministic("delta_mean", genotype_mean[1] - genotype_mean[0])
             return model
 
@@ -1490,6 +1675,20 @@ def simulate_predictive_subset(
         obs_logit_mean = image_logit_mean[:, obs_image_idx]
         obs_sigma = mito_sigma_by_image[:, obs_image_idx]
         return expit(rng.normal(loc=obs_logit_mean, scale=obs_sigma))
+    if data.likelihood_name == "logit_skew_normal":
+        image_logit_mean = flatten_draws(idata.posterior["image_logit_mean"])[draw_indices]
+        mito_sigma_by_image = flatten_draws(idata.posterior["mito_sigma_by_image"])[draw_indices]
+        skew_alpha = flatten_draws(idata.posterior["skew_alpha"])[draw_indices]
+        obs_logit_mean = image_logit_mean[:, obs_image_idx]
+        obs_sigma = mito_sigma_by_image[:, obs_image_idx]
+        return expit(
+            skewnorm.rvs(
+                a=skew_alpha[:, None],
+                loc=obs_logit_mean,
+                scale=obs_sigma,
+                random_state=rng,
+            )
+        )
 
     kappa_mito_by_image = flatten_draws(idata.posterior["kappa_mito_by_image"])[draw_indices]
     obs_kappa = kappa_mito_by_image[:, obs_image_idx]

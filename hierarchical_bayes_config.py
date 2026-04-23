@@ -15,7 +15,7 @@ DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH = Path(
 ALLOWED_SUMMARY_UPDATE_MODES = ("merge", "replace")
 ALLOWED_VISUALIZATION_REFRESH_MODES = ("never", "refit_first", "rerun_missing_traces")
 ALLOWED_POSITIVE_LIKELIHOODS = ("gamma", "lognormal")
-ALLOWED_BOUNDED_LIKELIHOODS = ("beta", "zero_one_inflated_beta", "logitnormal")
+ALLOWED_BOUNDED_LIKELIHOODS = ("beta", "zero_one_inflated_beta", "logitnormal", "logit_skew_normal")
 
 
 @dataclass(frozen=True)
