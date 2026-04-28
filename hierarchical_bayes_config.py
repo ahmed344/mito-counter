@@ -1,4 +1,9 @@
-"""Strict YAML configuration for the hierarchical Bayesian workflow."""
+"""Strict YAML configuration for the hierarchical Bayesian workflow.
+
+Positive-metric units are inherited from the configured measurement CSV rather
+than hardcoded here, so the workflow remains valid after rebuilding the inputs
+in nanometers.
+"""
 
 from __future__ import annotations
 

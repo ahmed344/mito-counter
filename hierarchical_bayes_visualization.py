@@ -57,15 +57,15 @@ TRACE_RANK_WSPACE = 0.28
 DEFAULT_HSPACE = 0.35
 DEFAULT_WSPACE = 0.22
 METRIC_UNITS = {
-    "Area": "um^2",
-    "Corrected_area": "um^2",
-    "Major_axis_length": "um",
-    "Minor_axis_length": "um",
-    "Minimum_Feret_Diameter": "um",
+    "Area": "nm^2",
+    "Corrected_area": "nm^2",
+    "Major_axis_length": "nm",
+    "Minor_axis_length": "nm",
+    "Minimum_Feret_Diameter": "nm",
     "Elongation": "",
     "Circularity": "",
     "Solidity": "",
-    "NND": "um",
+    "NND": "nm",
 }
 
 
@@ -405,12 +405,16 @@ def ppc_arrays_on_response_scale(
     predictive = np.asarray(idata.posterior_predictive["observed_metric"], dtype=float)
     predictive_samples = predictive.reshape(predictive.shape[0] * predictive.shape[1], predictive.shape[2])
     if prepared.family == "positive":
-        predictive_samples = predictive_samples * prepared.positive_scale
+        predictive_samples = prepared.positive_offset + predictive_samples * prepared.positive_scale
     return observed, predictive_samples
 
 
 def histogram_bin_edges(observed: np.ndarray, predictive_samples: np.ndarray) -> np.ndarray:
     """Compute stable histogram edges shared by observed and predictive PPC arrays.
+
+    Bin width and axis span are driven by a central band of the pooled data (default
+    0.5th--99.5th percentiles, with a small pad) so isolated extreme values do not stretch
+    the x-axis and flatten the main density peaks.
 
     Args:
         observed (np.ndarray): Observed response-scale values.
@@ -424,17 +428,31 @@ def histogram_bin_edges(observed: np.ndarray, predictive_samples: np.ndarray) ->
     combined = np.concatenate([observed.reshape(-1), predictive_subset])
     finite = combined[np.isfinite(combined)]
     if finite.size == 0:
-        return np.linspace(0.0, 1.0, 20)
-    lower = float(np.min(finite))
-    upper = float(np.max(finite))
+        return np.linspace(0.0, 1.0, 39)
+
+    finite_for_edges = finite
+    if finite.size >= 10:
+        lo = float(np.percentile(finite, 0.5))
+        hi = float(np.percentile(finite, 99.5))
+        if hi > lo:
+            span = hi - lo
+            pad = max(0.02 * span, np.finfo(float).tiny)
+            central = finite[(finite >= lo - pad) & (finite <= hi + pad)]
+            if central.size >= 5:
+                finite_for_edges = central
+
+    lower = float(np.min(finite_for_edges))
+    upper = float(np.max(finite_for_edges))
     if np.isclose(lower, upper):
         padding = max(abs(lower) * 0.05, 0.05)
-        return np.linspace(lower - padding, upper + padding, 20)
-    edges = np.histogram_bin_edges(finite, bins="fd")
+        return np.linspace(lower - padding, upper + padding, 39)
+    edges_fd = np.histogram_bin_edges(finite_for_edges, bins="fd")
+    n_fd_bins = max(1, edges_fd.size - 1)
+    edges = np.histogram_bin_edges(finite_for_edges, bins=2 * n_fd_bins)
     if edges.size < 12:
-        edges = np.linspace(lower, upper, 20)
-    if edges.size > 60:
-        edges = np.linspace(lower, upper, 60)
+        edges = np.linspace(lower, upper, 39)
+    if edges.size > 120:
+        edges = np.linspace(lower, upper, 120)
     return np.asarray(edges, dtype=float)
 
 
@@ -458,6 +476,7 @@ def plot_density_overlay(
     predictive_samples: np.ndarray,
     title: str,
     rng: np.random.Generator,
+    edges: np.ndarray | None = None,
 ) -> None:
     """Draw one observed-vs-predictive density-style overlay on a Matplotlib axis.
 
@@ -467,6 +486,8 @@ def plot_density_overlay(
         predictive_samples (np.ndarray): Predictive draws on the response scale.
         title (str): Axis title for the current subset.
         rng (np.random.Generator): Random number generator used to subsample predictive draws.
+        edges (np.ndarray | None): Optional precomputed bin edges; when None, edges are
+            chosen from the pooled observed and predictive values for this subplot.
 
     Returns:
         None
@@ -474,8 +495,11 @@ def plot_density_overlay(
 
     if observed.size == 0:
         ax.set_title(f"{title} (no observations)")
+        if edges is not None:
+            ax.set_xlim(float(edges[0]), float(edges[-1]))
         return
-    edges = histogram_bin_edges(observed=observed, predictive_samples=predictive_samples)
+    if edges is None:
+        edges = histogram_bin_edges(observed=observed, predictive_samples=predictive_samples)
     centers = 0.5 * (edges[1:] + edges[:-1])
     observed_density, _ = np.histogram(observed, bins=edges, density=True)
     predictive_count = min(40, predictive_samples.shape[0])
@@ -490,7 +514,15 @@ def plot_density_overlay(
     for predictive_density in predictive_densities:
         ax.step(centers, predictive_density, where="mid", color="tab:blue", alpha=0.08, linewidth=1.0)
     ax.step(centers, np.median(predictive_densities, axis=0), where="mid", color="tab:blue", linewidth=2.0)
-    ax.step(centers, observed_density, where="mid", color="black", linewidth=2.0)
+    ax.step(
+        centers,
+        observed_density,
+        where="mid",
+        color="red",
+        alpha=0.7,
+        linewidth=2.0,
+    )
+    ax.set_xlim(float(edges[0]), float(edges[-1]))
     ax.set_title(title, pad=10)
 
 
@@ -534,6 +566,44 @@ def fit_title(row: pd.Series) -> str:
     """
 
     return f"{row['metric']} - {row['muscle']}"
+
+
+def summary_text_or_empty(value: Any) -> str:
+    """Normalize an optional summary field into a clean title-safe string.
+
+    Args:
+        value (Any): Raw dataframe cell value that may be empty or NaN.
+
+    Returns:
+        str: Stripped text, or an empty string when no usable text is present.
+    """
+
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return ""
+    return text
+
+
+def superplot_title_text(row: pd.Series) -> str:
+    """Build the superplot title including posterior and Bayes-factor summaries.
+
+    Args:
+        row (pd.Series): Summary row describing one muscle-metric fit.
+
+    Returns:
+        str: Multi-line title text for the superplot figure.
+    """
+
+    title_lines = [fit_title(row)]
+    delta_summary = summary_text_or_empty(row.get("delta_mean_summary", ""))
+    bf_summary = summary_text_or_empty(row.get("delta_mean_bf_summary", ""))
+    if delta_summary:
+        title_lines.append(delta_summary)
+    if bf_summary:
+        title_lines.append(bf_summary)
+    return "\n".join(title_lines)
 
 
 def figure_filename_prefix(row: pd.Series) -> str:
@@ -1011,7 +1081,9 @@ def plot_ppc_density(
     ax.set_ylabel("Density")
     ax.legend(
         handles=[
-            matplotlib.lines.Line2D([0], [0], color="black", linewidth=2.0, label="Observed"),
+            matplotlib.lines.Line2D(
+                [0], [0], color="red", alpha=0.7, linewidth=2.0, label="Observed data"
+            ),
             matplotlib.lines.Line2D(
                 [0],
                 [0],
@@ -1049,8 +1121,9 @@ def plot_ppc_density_by_condition(
     """
 
     observed, predictive_samples = ppc_arrays_on_response_scale(idata=idata, prepared=prepared)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True, sharex=True)
     rng = np.random.default_rng(20260416)
+    shared_edges = histogram_bin_edges(observed=observed, predictive_samples=predictive_samples)
     genotype_labels = ((0, prepared.wt_label), (1, prepared.ko_label))
     for ax, (genotype_value, label) in zip(np.atleast_1d(axes), genotype_labels):
         mask = prepared.genotype_idx_obs == genotype_value
@@ -1060,13 +1133,16 @@ def plot_ppc_density_by_condition(
             predictive_samples=predictive_samples[:, mask],
             title=label,
             rng=rng,
+            edges=shared_edges,
         )
         ax.set_xlabel(metric_axis_label(str(row["metric"])))
     np.atleast_1d(axes)[0].set_ylabel("Density")
     axes_array = np.atleast_1d(axes)
     axes_array[0].legend(
         handles=[
-            matplotlib.lines.Line2D([0], [0], color="black", linewidth=2.0, label="Observed"),
+            matplotlib.lines.Line2D(
+                [0], [0], color="red", alpha=0.7, linewidth=2.0, label="Observed data"
+            ),
             matplotlib.lines.Line2D(
                 [0],
                 [0],
@@ -1325,7 +1401,7 @@ def plot_bayesian_superplots(
     """
 
     subset = measurements_df.loc[measurements_df["Muscle"] == row["muscle"]].copy()
-    title_text = f"{fit_title(row)}\n{row['delta_mean_summary']}"
+    title_text = superplot_title_text(row)
     fit_dir = output_dir
     plot_super_violin(
         data=subset,

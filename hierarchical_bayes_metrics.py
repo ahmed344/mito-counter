@@ -1,4 +1,9 @@
-"""Hierarchical Bayesian analysis for per-mitochondrion metrics."""
+"""Hierarchical Bayesian analysis for per-mitochondrion metrics.
+
+Positive metrics are modeled on whatever physical scale is present in the input
+measurement CSV, so this workflow remains numerically valid after rebuilding
+the measurements in nanometers.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +20,7 @@ import pymc as pm
 import pytensor.tensor as pt
 import xarray as xr
 from scipy.special import expit
-from scipy.stats import skewnorm, wasserstein_distance
+from scipy.stats import gaussian_kde, norm, skewnorm, wasserstein_distance
 
 from hierarchical_bayes_config import (
     BayesFitConfig,
@@ -59,6 +64,9 @@ PPC_DENSITY_BIN_LIMIT = 60
 LOGITNORMAL_QUADRATURE_POINTS = 20
 LOGIT_SKEW_NORMAL_QUANTILE_POINTS = 24
 LOGIT_SKEW_NORMAL_MOMENT_CHUNK_SIZE = 4096
+SAVAGE_DICKEY_MIN_PRIOR_DRAWS = 12000
+SAVAGE_DICKEY_NULL_VALUE = 0.0
+SAVAGE_DICKEY_MIN_DENSITY = 1e-12
 
 
 @dataclass(frozen=True)
@@ -83,6 +91,7 @@ class PreparedMetricData:
     image_labels: list[str]
     boundary_adjusted: bool
     positive_scale: float
+    positive_offset: float
     pooled_median: float
     pooled_std: float
     n_obs_wt: int
@@ -592,7 +601,16 @@ def prepare_metric_data(
     observed_y = raw_values.copy()
 
     positive_scale = 1.0
+    positive_offset = 0.0
     if family == "positive":
+        positive_offset = 1.0 if metric == "Elongation" else 0.0
+        values = values - positive_offset
+        if np.any(values <= 0.0):
+            min_raw_value = float(np.min(raw_values))
+            raise ValueError(
+                f"{metric} must be strictly greater than {positive_offset} for positive modeling; "
+                f"minimum observed value is {min_raw_value}."
+            )
         positive_scale = max(float(np.median(values)), SMALL_VALUE)
         values = values / positive_scale
 
@@ -651,6 +669,7 @@ def prepare_metric_data(
         image_labels=image_table["image"].astype(str).tolist(),
         boundary_adjusted=boundary_adjusted,
         positive_scale=positive_scale,
+        positive_offset=positive_offset,
         pooled_median=max(pooled_median, SMALL_VALUE),
         pooled_std=pooled_std,
         n_obs_wt=int(np.sum(df_metric["genotype_idx"] == 0)),
@@ -1321,9 +1340,10 @@ def attach_response_scale_posterior(
     response_variables: dict[str, xr.DataArray] = {}
     if data.family == "positive":
         mean_scale = data.positive_scale
+        mean_offset = data.positive_offset
         variance_draws = positive_response_scale_variance_components(data=data, posterior=posterior)
         response_variables = {
-            "genotype_mean_response": posterior["genotype_mean"] * mean_scale,
+            "genotype_mean_response": mean_offset + posterior["genotype_mean"] * mean_scale,
             "delta_mean_response": posterior["delta_mean"] * mean_scale,
             "animal_variance_shared_response": xr.DataArray(
                 variance_draws["animal_variance_shared"],
@@ -1478,6 +1498,188 @@ def summarize_scalar(draws: np.ndarray, label: str) -> dict[str, float | str]:
         f"{label}_summary": (
             f"delta={estimate:.4g}, 95% HDI [{hdi_low:.4g},{hdi_high:.4g}], pd={pd_value:.1f}%"
         ),
+    }
+
+
+def empty_bayes_factor_summary() -> dict[str, float | str]:
+    """Return placeholder columns for delta-mean Bayes-factor outputs.
+
+    Args:
+        None
+
+    Returns:
+        dict[str, float | str]: Empty summary values for BF-related columns.
+    """
+
+    return {
+        "delta_mean_bf10": float("nan"),
+        "delta_mean_log_bf10": float("nan"),
+        "delta_mean_prior_density_at_null": float("nan"),
+        "delta_mean_posterior_density_at_null": float("nan"),
+        "delta_mean_bf_annotation": "",
+        "delta_mean_bf_summary": "",
+    }
+
+
+def format_bayes_factor_annotation(bf10: float) -> str:
+    """Map a BF10 value to the requested compact annotation symbol.
+
+    Args:
+        bf10 (float): Bayes factor favoring the alternative over the null.
+
+    Returns:
+        str: Compact annotation symbol for the evidence category.
+    """
+
+    if not np.isfinite(bf10) or bf10 <= 0.0:
+        return ""
+    if bf10 > 100.0:
+        return "***"
+    if bf10 > 10.0:
+        return "**"
+    if bf10 > 3.0:
+        return "*"
+    if bf10 < 0.01:
+        return "==="
+    if bf10 < 0.1:
+        return "=="
+    if bf10 < (1.0 / 3.0):
+        return "="
+    return "~"
+
+
+def format_bayes_factor_value(bf10: float) -> str:
+    """Format a BF10 value compactly for figure titles and CSV summaries.
+
+    Args:
+        bf10 (float): Bayes factor favoring the alternative over the null.
+
+    Returns:
+        str: Human-readable compact numeric representation.
+    """
+
+    if not np.isfinite(bf10) or bf10 <= 0.0:
+        return "nan"
+    if bf10 >= 1000.0 or bf10 < 0.01:
+        return f"{bf10:.2e}"
+    if bf10 >= 100.0:
+        return f"{bf10:.0f}"
+    if bf10 >= 10.0:
+        return f"{bf10:.1f}"
+    return f"{bf10:.2f}"
+
+
+def density_at_point(draws: np.ndarray, point: float) -> float:
+    """Estimate the density of scalar draws at a specific point.
+
+    Args:
+        draws (np.ndarray): One-dimensional posterior or prior draws.
+        point (float): Scalar value where the density should be evaluated.
+
+    Returns:
+        float: Estimated density at `point`, clipped to a small positive floor.
+    """
+
+    flat = np.asarray(draws, dtype=float).reshape(-1)
+    if flat.size == 0:
+        return SAVAGE_DICKEY_MIN_DENSITY
+    if np.unique(flat).size < 2:
+        scale = max(abs(float(flat[0])) * 0.05, SMALL_VALUE)
+        density = float(norm.pdf(point, loc=float(flat[0]), scale=scale))
+        return max(density, SAVAGE_DICKEY_MIN_DENSITY)
+    try:
+        density = float(np.asarray(gaussian_kde(flat)([point]), dtype=float).reshape(-1)[0])
+    except (np.linalg.LinAlgError, ValueError):
+        scale = max(float(np.std(flat, ddof=1)), SMALL_VALUE)
+        density = float(norm.pdf(point, loc=float(np.mean(flat)), scale=scale))
+    return max(density, SAVAGE_DICKEY_MIN_DENSITY)
+
+
+def delta_mean_response_draws_from_posterior(
+    data: PreparedMetricData,
+    idata: az.InferenceData,
+) -> np.ndarray:
+    """Extract response-scale WT-vs-KO mean-difference draws from the posterior.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        idata (az.InferenceData): Posterior inference data for one fitted model.
+
+    Returns:
+        np.ndarray: Flattened response-scale posterior draws for `KO - WT`.
+    """
+
+    delta_mean = flatten_draws(idata.posterior["delta_mean"]).reshape(-1)
+    if data.family == "positive":
+        return delta_mean * data.positive_scale
+    return delta_mean
+
+
+def sample_prior_delta_mean_response_draws(
+    data: PreparedMetricData,
+    sample_count: int,
+    random_seed: int,
+) -> np.ndarray:
+    """Sample response-scale WT-vs-KO mean-difference draws from the prior.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        sample_count (int): Number of prior draws to simulate.
+        random_seed (int): Random seed used for reproducible prior sampling.
+
+    Returns:
+        np.ndarray: Flattened response-scale prior draws for `KO - WT`.
+    """
+
+    model = build_model(data)
+    with model:
+        prior_draws = pm.sample_prior_predictive(
+            samples=sample_count,
+            var_names=["delta_mean"],
+            random_seed=random_seed,
+            return_inferencedata=False,
+        )
+    delta_mean = np.asarray(prior_draws["delta_mean"], dtype=float).reshape(-1)
+    if data.family == "positive":
+        return delta_mean * data.positive_scale
+    return delta_mean
+
+
+def summarize_delta_mean_bayes_factor(
+    data: PreparedMetricData,
+    idata: az.InferenceData,
+    random_seed: int,
+) -> dict[str, float | str]:
+    """Compute Savage-Dickey Bayes-factor summaries for the WT-vs-KO mean delta.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        idata (az.InferenceData): Posterior inference data for one fitted model.
+        random_seed (int): Random seed used for reproducible prior sampling.
+
+    Returns:
+        dict[str, float | str]: BF values, densities, compact annotation, and summary text.
+    """
+
+    posterior_draws = delta_mean_response_draws_from_posterior(data=data, idata=idata)
+    prior_draw_count = max(SAVAGE_DICKEY_MIN_PRIOR_DRAWS, posterior_draws.size)
+    prior_draws = sample_prior_delta_mean_response_draws(
+        data=data,
+        sample_count=prior_draw_count,
+        random_seed=random_seed,
+    )
+    prior_density = density_at_point(draws=prior_draws, point=SAVAGE_DICKEY_NULL_VALUE)
+    posterior_density = density_at_point(draws=posterior_draws, point=SAVAGE_DICKEY_NULL_VALUE)
+    log_bf10 = float(np.log(prior_density) - np.log(posterior_density))
+    bf10 = float(np.exp(log_bf10))
+    annotation = format_bayes_factor_annotation(bf10=bf10)
+    return {
+        "delta_mean_bf10": bf10,
+        "delta_mean_log_bf10": log_bf10,
+        "delta_mean_prior_density_at_null": prior_density,
+        "delta_mean_posterior_density_at_null": posterior_density,
+        "delta_mean_bf_annotation": annotation,
+        "delta_mean_bf_summary": f"BF10={format_bayes_factor_value(bf10)} {annotation}".strip(),
     }
 
 
@@ -1664,10 +1866,10 @@ def simulate_predictive_subset(
                 mean=parent_mean,
                 variance=obs_variance,
             )
-            return data.positive_scale * rng.lognormal(mean=log_mu, sigma=log_sigma)
+            return data.positive_offset + data.positive_scale * rng.lognormal(mean=log_mu, sigma=log_sigma)
         gamma_shape = np.square(parent_mean) / np.clip(obs_variance, SMALL_VALUE, None)
         gamma_scale = np.clip(obs_variance, SMALL_VALUE, None) / np.clip(parent_mean, SMALL_VALUE, None)
-        return data.positive_scale * rng.gamma(shape=gamma_shape, scale=gamma_scale)
+        return data.positive_offset + data.positive_scale * rng.gamma(shape=gamma_shape, scale=gamma_scale)
 
     if data.likelihood_name == "logitnormal":
         image_logit_mean = flatten_draws(idata.posterior["image_logit_mean"])[draw_indices]
@@ -1888,6 +2090,7 @@ def summarize_model(
         diagnostic_names = diagnostic_var_names(data.family, data.likelihood_name)
 
     mean_scale = data.positive_scale if data.family == "positive" else 1.0
+    mean_offset = data.positive_offset if data.family == "positive" else 0.0
 
     row: dict[str, Any] = {
         "muscle": data.muscle,
@@ -1904,12 +2107,20 @@ def summarize_model(
         "n_images_ko": data.n_images_ko,
         "boundary_adjusted": data.boundary_adjusted,
         "positive_scale": data.positive_scale,
+        "positive_offset": data.positive_offset,
         "sampling_seconds": sampling_seconds,
-        "wt_mean": float(np.median(wt_mean) * mean_scale),
-        "ko_mean": float(np.median(ko_mean) * mean_scale),
+        "wt_mean": float(mean_offset + np.median(wt_mean) * mean_scale),
+        "ko_mean": float(mean_offset + np.median(ko_mean) * mean_scale),
         "animal_variance_shared": float(np.median(variance_draws["animal_variance_shared"])),
     }
     row.update(summarize_scalar((ko_mean - wt_mean) * mean_scale, "delta_mean"))
+    row.update(
+        summarize_delta_mean_bayes_factor(
+            data=data,
+            idata=idata,
+            random_seed=random_seed,
+        )
+    )
     row.update(summarize_scalar(variance_draws["delta_image_variance"], "delta_image_variance"))
     row.update(summarize_scalar(variance_draws["delta_mito_variance"], "delta_mito_variance"))
     row["wt_image_variance"] = float(np.median(variance_draws["wt_image_variance"]))
@@ -2034,6 +2245,7 @@ def analyze_metric(
                 "sampling_tune": attempt_tune,
                 "sampling_target_accept": attempt_target_accept,
             }
+            error_row.update(empty_bayes_factor_summary())
             attempt_results.append(
                 MetricAnalysisResult(
                     row=error_row,

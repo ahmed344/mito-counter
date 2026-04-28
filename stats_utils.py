@@ -17,6 +17,12 @@ SUPERPLOT_POINT_SIZE_MAX = 11
 SUPERPLOT_POINT_ALPHA = 0.4
 ROBUST_Y_LOWER_QUANTILE = 0.01
 ROBUST_Y_UPPER_QUANTILE = 0.99
+SUPERPLOT_TITLE_PAD = 34
+SUPERPLOT_LAYOUT_TOP = 0.97
+SUPERPLOT_ANNOTATION_BASE_Y = 1.02
+SUPERPLOT_ANNOTATION_BRACKET_HEIGHT = 0.025
+SUPERPLOT_ANNOTATION_TEXT_OFFSET = 0.008
+SUPERPLOT_ANNOTATION_STACK_GAP = 0.07
 
 
 def maybe_show_current_figure():
@@ -144,7 +150,17 @@ def format_unit_label(metric_name, unit_dict):
     if not unit_dict or metric_name not in unit_dict or not unit_dict[metric_name]:
         return ""
 
-    formatted_unit = unit_dict[metric_name].replace("um", r"$\mu m$").replace("^2", r"$^2$")
+    unit_text = unit_dict[metric_name]
+    if unit_text == "um":
+        formatted_unit = r"$\mu m$"
+    elif unit_text == "um^2":
+        formatted_unit = r"$\mu m^2$"
+    elif unit_text == "nm":
+        formatted_unit = r"$nm$"
+    elif unit_text == "nm^2":
+        formatted_unit = r"$nm^2$"
+    else:
+        formatted_unit = unit_text.replace("^2", r"$^2$")
     return f" ({formatted_unit})"
 
 
@@ -167,8 +183,8 @@ def build_output_path(y, x, hue, save_dir, suffix, filename_prefix=None):
 
     directory_by_suffix = {
         "boxplot": "box_plots",
-        "superviolin": "",
-        "superbeeswarm": "",
+        "superviolin": "super_violins",
+        "superbeeswarm": "super_beeswarms",
     }
     output_dir = Path(save_dir) / directory_by_suffix.get(suffix, "")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -488,7 +504,115 @@ def add_superplot_summary(ax, group_data, y, block, center, block_palette):
     return None
 
 
-def finalize_superplot(ax, y, x, tick_positions, tick_labels, unit_dict, block_palette, block_legend_labels, title, output_path, y_values):
+def normalize_superplot_annotations(superplot_annotations):
+    """Normalize optional superplot annotation inputs into record dictionaries.
+
+    Args:
+        superplot_annotations (dict[str, str] | list[dict[str, str]] | None): Optional
+            annotation labels keyed by x-category or already structured as records.
+
+    Returns:
+        list[dict[str, str]]: Annotation records with at least ``x`` and ``label`` keys.
+    """
+    if superplot_annotations is None:
+        return []
+    if isinstance(superplot_annotations, dict):
+        return [
+            {"x": str(x_value), "label": str(label)}
+            for x_value, label in superplot_annotations.items()
+            if str(label).strip()
+        ]
+    return [
+        {str(key): str(value) for key, value in record.items()}
+        for record in superplot_annotations
+        if str(record.get("label", "")).strip()
+    ]
+
+
+def add_superplot_annotations(ax, annotation_records, group_centers, hue_order):
+    """Draw bracket-style annotations over paired hue groups in a superplot.
+
+    Args:
+        ax (plt.Axes): Matplotlib axes receiving the annotation brackets.
+        annotation_records (list[dict[str, str]]): Annotation records with ``x`` and
+            ``label`` keys, plus optional ``hue_start`` and ``hue_end`` labels.
+        group_centers (dict[tuple[str, str], float]): Mapping from ``(x, hue)`` pairs
+            to plotted x-axis positions.
+        hue_order (list[str]): Ordered hue labels used to choose paired conditions.
+
+    Returns:
+        None: The function adds bracket and text artists directly to ``ax``.
+    """
+    if len(hue_order) < 2 or not annotation_records:
+        return None
+
+    xaxis_transform = ax.get_xaxis_transform()
+    annotation_counts_by_x = {}
+
+    for record in annotation_records:
+        x_value = str(record.get("x", ""))
+        label = str(record.get("label", "")).strip()
+        if not x_value or not label:
+            continue
+
+        hue_start = str(record.get("hue_start", hue_order[0]))
+        hue_end = str(record.get("hue_end", hue_order[1]))
+        start_key = (x_value, hue_start)
+        end_key = (x_value, hue_end)
+        if start_key not in group_centers or end_key not in group_centers:
+            continue
+
+        x_start = group_centers[start_key]
+        x_end = group_centers[end_key]
+        annotation_index = annotation_counts_by_x.get(x_value, 0)
+        annotation_counts_by_x[x_value] = annotation_index + 1
+        y_line = SUPERPLOT_ANNOTATION_BASE_Y + SUPERPLOT_ANNOTATION_STACK_GAP * annotation_index
+        ax.plot(
+            [x_start, x_start, x_end, x_end],
+            [
+                y_line,
+                y_line + SUPERPLOT_ANNOTATION_BRACKET_HEIGHT,
+                y_line + SUPERPLOT_ANNOTATION_BRACKET_HEIGHT,
+                y_line,
+            ],
+            color="black",
+            linewidth=1.2,
+            transform=xaxis_transform,
+            clip_on=False,
+            zorder=10,
+        )
+        ax.text(
+            (x_start + x_end) / 2.0,
+            y_line + SUPERPLOT_ANNOTATION_BRACKET_HEIGHT + SUPERPLOT_ANNOTATION_TEXT_OFFSET,
+            label,
+            ha="center",
+            va="bottom",
+            fontsize=12,
+            color="black",
+            transform=xaxis_transform,
+            clip_on=False,
+            zorder=11,
+        )
+
+    return None
+
+
+def finalize_superplot(
+    ax,
+    y,
+    x,
+    tick_positions,
+    tick_labels,
+    unit_dict,
+    block_palette,
+    block_legend_labels,
+    title,
+    output_path,
+    y_values,
+    annotation_records=None,
+    group_centers=None,
+    hue_order=None,
+):
     """Apply shared formatting, legend handling, and saving for custom superplots.
 
     Args:
@@ -504,6 +628,11 @@ def finalize_superplot(ax, y, x, tick_positions, tick_labels, unit_dict, block_p
         output_path (Path | None): Optional destination where the figure is saved.
         y_values (np.ndarray | pd.Series | list[float]): Numeric values used to set a
             robust y-axis display range.
+        annotation_records (list[dict[str, str]] | None): Optional bracket labels for
+            paired hue groups.
+        group_centers (dict[tuple[str, str], float] | None): X positions for each
+            plotted category/hue group.
+        hue_order (list[str] | None): Ordered hue labels used by the plot.
 
     Returns:
         None: The function formats and optionally saves the current figure.
@@ -512,8 +641,15 @@ def finalize_superplot(ax, y, x, tick_positions, tick_labels, unit_dict, block_p
     ax.set_xticklabels(tick_labels, rotation=20, ha="right")
     ax.set_xlabel(x, fontsize=12)
     ax.set_ylabel(f"{y}{format_unit_label(y, unit_dict)}", fontsize=12)
-    ax.set_title(title, fontsize=14, pad=24)
+    ax.set_title(title, fontsize=14, pad=SUPERPLOT_TITLE_PAD)
     apply_robust_y_limits(ax=ax, values=y_values)
+    if annotation_records and group_centers is not None and hue_order is not None:
+        add_superplot_annotations(
+            ax=ax,
+            annotation_records=annotation_records,
+            group_centers=group_centers,
+            hue_order=hue_order,
+        )
     ax.grid(axis="y", alpha=0.22, linestyle="--")
     if block_palette:
         handles = [
@@ -533,7 +669,7 @@ def finalize_superplot(ax, y, x, tick_positions, tick_labels, unit_dict, block_p
         ax.legend(handles=handles, frameon=True)
 
     sns.despine(ax=ax)
-    plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+    plt.tight_layout(rect=(0.0, 0.0, 1.0, SUPERPLOT_LAYOUT_TOP))
     if output_path is not None:
         plt.savefig(output_path, dpi=300)
     maybe_show_current_figure()
@@ -624,6 +760,7 @@ def plot_super_violin(
     save_dir=None,
     title_override=None,
     filename_prefix=None,
+    superplot_annotations=None,
 ):
     """Plot a block-striped violin superplot with replicate summaries.
 
@@ -637,6 +774,8 @@ def plot_super_violin(
         save_dir (str | Path | None): Optional output directory where a PNG is saved.
         title_override (str | None): Optional custom title replacing the default title text.
         filename_prefix (str | None): Optional prefix used as the output filename stem.
+        superplot_annotations (dict[str, str] | list[dict[str, str]] | None): Optional
+            bracket annotation labels for paired hue groups.
 
     Returns:
         None: The function renders/saves the plot and does not return a value.
@@ -647,6 +786,7 @@ def plot_super_violin(
         return None
 
     x_order, hue_order, block_order = get_category_orders(plot_data=plot_data, x=x, hue=hue, block=block)
+    annotation_records = normalize_superplot_annotations(superplot_annotations)
     if not block_order:
         print(f"Skipping {y} superviolin: no block values available.")
         return None
@@ -793,6 +933,9 @@ def plot_super_violin(
         title=title_override if title_override is not None else f"{y} superviolin by {x} and {hue}",
         output_path=output_path,
         y_values=plot_data[y].to_numpy(dtype=float),
+        annotation_records=annotation_records,
+        group_centers=group_centers,
+        hue_order=hue_order,
     )
     return None
 
@@ -807,6 +950,7 @@ def plot_super_beeswarm(
     save_dir=None,
     title_override=None,
     filename_prefix=None,
+    superplot_annotations=None,
 ):
     """Plot a block-colored beeswarm superplot shaped by pooled density.
 
@@ -820,6 +964,8 @@ def plot_super_beeswarm(
         save_dir (str | Path | None): Optional output directory where a PNG is saved.
         title_override (str | None): Optional custom title replacing the default title text.
         filename_prefix (str | None): Optional prefix used as the output filename stem.
+        superplot_annotations (dict[str, str] | list[dict[str, str]] | None): Optional
+            bracket annotation labels for paired hue groups.
 
     Returns:
         None: The function renders/saves the plot and does not return a value.
@@ -830,6 +976,7 @@ def plot_super_beeswarm(
         return None
 
     x_order, hue_order, block_order = get_category_orders(plot_data=plot_data, x=x, hue=hue, block=block)
+    annotation_records = normalize_superplot_annotations(superplot_annotations)
     if not block_order:
         print(f"Skipping {y} superbeeswarm: no block values available.")
         return None
@@ -956,11 +1103,14 @@ def plot_super_beeswarm(
         title=title_override if title_override is not None else f"{y} superbeeswarm by {x} and {hue}",
         output_path=output_path,
         y_values=plot_data[y].to_numpy(dtype=float),
+        annotation_records=annotation_records,
+        group_centers=group_centers,
+        hue_order=hue_order,
     )
     return None
 
 
-def plot_metric_variants(data, x, y, hue, block, unit_dict=None, save_dir=None):
+def plot_metric_variants(data, x, y, hue, block, unit_dict=None, save_dir=None, superplot_annotations=None):
     """Generate boxplot, superviolin, and superbeeswarm outputs for one metric.
 
     Args:
@@ -971,6 +1121,8 @@ def plot_metric_variants(data, x, y, hue, block, unit_dict=None, save_dir=None):
         block (str): Column name identifying replicate blocks.
         unit_dict (dict[str, str] | None): Optional mapping from metric name to display unit.
         save_dir (str | Path | None): Optional output directory where PNG files are saved.
+        superplot_annotations (dict[str, str] | list[dict[str, str]] | None): Optional
+            BF annotation labels for superplot WT-vs-KO brackets.
 
     Returns:
         None: The function renders/saves plots and does not return a value.
@@ -991,6 +1143,7 @@ def plot_metric_variants(data, x, y, hue, block, unit_dict=None, save_dir=None):
         block=block,
         unit_dict=unit_dict,
         save_dir=save_dir,
+        superplot_annotations=superplot_annotations,
     )
     plot_super_beeswarm(
         data=data,
@@ -1000,5 +1153,6 @@ def plot_metric_variants(data, x, y, hue, block, unit_dict=None, save_dir=None):
         block=block,
         unit_dict=unit_dict,
         save_dir=save_dir,
+        superplot_annotations=superplot_annotations,
     )
     return None
