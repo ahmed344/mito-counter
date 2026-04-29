@@ -29,6 +29,7 @@ from hierarchical_bayes_config import (
 from hierarchical_bayes_metrics import (
     BOUNDED_LIKELIHOODS,
     BOUNDED_METRICS,
+    CLUSTERING_METRICS,
     POSITIVE_LIKELIHOODS,
     POSITIVE_METRICS,
     PreparedMetricData,
@@ -66,6 +67,9 @@ METRIC_UNITS = {
     "Circularity": "",
     "Solidity": "",
     "NND": "nm",
+    "3NND": "nm",
+    "5NND": "nm",
+    "Voronoi_Cell_Area": "nm^2",
 }
 
 
@@ -565,7 +569,8 @@ def fit_title(row: pd.Series) -> str:
         str: Human-readable title prefix for the current fit.
     """
 
-    return f"{row['metric']} - {row['muscle']}"
+    scope = " center instances" if str(row["metric"]) in CLUSTERING_METRICS else ""
+    return f"{row['metric']} - {row['muscle']}{scope}"
 
 
 def summary_text_or_empty(value: Any) -> str:

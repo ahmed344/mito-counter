@@ -18,7 +18,7 @@ runtime:
   retry_max_target_accept: 0.999 # Float in [0.8, 0.999]. Upper cap for adaptive retry NUTS target acceptance.
 
 available_options:
-  positive_likelihoods: ["gamma", "lognormal"] # Legal likelihoods for positive metrics such as Area, NND, or Elongation.
+  positive_likelihoods: ["gamma", "lognormal"] # Legal likelihoods for positive metrics such as Area, Elongation, and clustering metrics.
   bounded_likelihoods: ["beta", "zero_one_inflated_beta", "logitnormal", "logit_skew_normal"] # Legal likelihoods for bounded metrics such as Circularity or Solidity.
   summary_update_modes: ["merge", "replace"] # Legal summary write behaviors.
   visualization_refresh_modes: ["never", "refit_first", "rerun_missing_traces"] # Legal figure-workflow refresh behaviors.
@@ -27,8 +27,8 @@ available_options:
 fits:
   soleus_area:
     muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
-    metric: "Area" # Metric column name. Positive metrics: Area, Corrected_area, Major_axis_length, Minor_axis_length, Minimum_Feret_Diameter, Elongation, NND.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    metric: "Area" # Metric column name. Positive metrics include morphology metrics plus NND, 3NND, 5NND, and Voronoi_Cell_Area.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # For positive metrics use `gamma` or `lognormal`; lognormal fit the Soleus Area distribution better overall.
     draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
     tune: 1500 # Integer >= 1. Warmup draws per chain.
@@ -38,7 +38,7 @@ fits:
   soleus_corrected_area:
     muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Corrected_area" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal reduced the full-distribution PPC mismatch here.
     draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
     tune: 1500 # Integer >= 1. Warmup draws per chain.
@@ -48,7 +48,7 @@ fits:
   soleus_major_axis_length:
     muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Major_axis_length" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal improved both Wasserstein and density-L1 in Soleus.
     draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
     tune: 1500 # Integer >= 1. Warmup draws per chain.
@@ -58,7 +58,7 @@ fits:
   soleus_minor_axis_length:
     muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Minor_axis_length" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal looked better and scored better on the added PPC metrics.
     draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
     tune: 1500 # Integer >= 1. Warmup draws per chain.
@@ -68,7 +68,7 @@ fits:
   soleus_minimum_feret_diameter:
     muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Minimum_Feret_Diameter" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal gave a modest but consistent PPC improvement in Soleus.
     draws: 1500 # Integer >= 1. Safety margin above the previous second-attempt settings.
     tune: 2500 # Integer >= 1. Extra warmup to avoid repeating the automatic retry.
@@ -78,7 +78,7 @@ fits:
   soleus_elongation:
     muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Elongation" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal better matched the shifted Elongation tail behavior.
     draws: 1500 # Integer >= 1. Safety margin above the successful retry for shifted Elongation.
     tune: 2500 # Integer >= 1. Extra warmup to avoid repeating the automatic second attempt.
@@ -88,8 +88,38 @@ fits:
   soleus_nnd:
     muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "NND" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "gamma" # Positive metric option: `gamma` or `lognormal`; gamma remained the more stable choice for Soleus NND.
+    draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
+    tune: 1500 # Integer >= 1. Warmup draws per chain.
+    chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
+    target_accept: 0.99 # Float in [0.8, 0.999]. Higher values are safer for difficult NUTS geometries.
+
+  soleus_3nnd:
+    muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
+    metric: "3NND" # Clustering metric restricted to Image_Region == center by the analysis code.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    likelihood: "gamma" # Positive metric option: `gamma` or `lognormal`; start from the stable Soleus NND choice.
+    draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
+    tune: 1500 # Integer >= 1. Warmup draws per chain.
+    chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
+    target_accept: 0.99 # Float in [0.8, 0.999]. Higher values are safer for difficult NUTS geometries.
+
+  soleus_5nnd:
+    muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
+    metric: "5NND" # Clustering metric restricted to Image_Region == center by the analysis code.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    likelihood: "gamma" # Positive metric option: `gamma` or `lognormal`; start from the stable Soleus NND choice.
+    draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
+    tune: 1500 # Integer >= 1. Warmup draws per chain.
+    chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
+    target_accept: 0.99 # Float in [0.8, 0.999]. Higher values are safer for difficult NUTS geometries.
+
+  soleus_voronoi_cell_area:
+    muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
+    metric: "Voronoi_Cell_Area" # Clustering metric restricted to Image_Region == center by the analysis code.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; Voronoi areas are positive and typically right-skewed.
     draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
     tune: 1500 # Integer >= 1. Warmup draws per chain.
     chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
@@ -98,7 +128,7 @@ fits:
   soleus_circularity:
     muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Circularity" # Bounded metric name. Bounded metrics currently supported: Circularity, Solidity.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "logit_skew_normal" # For bounded metrics use `beta`, `zero_one_inflated_beta`, `logitnormal`, or `logit_skew_normal`; logit_skew_normal is the new default open-interval choice for skewed bounded data.
     draws: 1500 # Integer >= 1. Increased posterior draws for the richer bounded hierarchy.
     tune: 1500 # Integer >= 1. Extra warmup for the harder logitnormal bounded fit.
@@ -108,7 +138,7 @@ fits:
   soleus_solidity:
     muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Solidity" # Bounded metric name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "logit_skew_normal" # For bounded metrics use `beta`, `zero_one_inflated_beta`, `logitnormal`, or `logit_skew_normal`; logit_skew_normal is now preferred for the observed asymmetric bounded PPCs.
     draws: 1500 # Integer >= 1. Posterior draws per chain for this hardest Soleus bounded fit.
     tune: 2500 # Integer >= 1. Warmup draws per chain for this hardest Soleus bounded fit.
@@ -118,7 +148,7 @@ fits:
   tibialis_anterior_area:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Area" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal removed engine warnings and improved density fit for TA Area.
     draws: 1500 # Integer >= 1. Safety margin above the previous second-attempt settings.
     tune: 2500 # Integer >= 1. Extra warmup for retry-prone positive geometry.
@@ -128,7 +158,7 @@ fits:
   tibialis_anterior_corrected_area:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Corrected_area" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal gave a cleaner engine fit and lower density-L1 for TA Corrected_area.
     draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
     tune: 1500 # Integer >= 1. Warmup draws per chain.
@@ -138,7 +168,7 @@ fits:
   tibialis_anterior_major_axis_length:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Major_axis_length" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal cleared warnings, but this fit still benefits from the strongest sampler settings.
     draws: 2500 # Integer >= 1. Extra posterior draws because this metric previously reached attempt 3.
     tune: 3500 # Integer >= 1. Extra warmup so the first configured attempt starts beyond prior retries.
@@ -148,7 +178,7 @@ fits:
   tibialis_anterior_minor_axis_length:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Minor_axis_length" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "gamma" # Positive metric option: `gamma` or `lognormal`; gamma remained slightly stronger and more stable for this metric.
     draws: 2500 # Integer >= 1. Extra posterior draws for the low bulk-ESS image-variance hierarchy.
     tune: 3500 # Integer >= 1. Extra warmup for the slowly mixing image-variance hierarchy.
@@ -158,7 +188,7 @@ fits:
   tibialis_anterior_minimum_feret_diameter:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Minimum_Feret_Diameter" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "gamma" # Positive metric option: `gamma` or `lognormal`; gamma stayed clearly superior for this metric in the recent comparison.
     draws: 1500 # Integer >= 1. Safety margin above the previous second-attempt settings.
     tune: 2500 # Integer >= 1. Extra warmup to avoid repeating the automatic retry.
@@ -168,7 +198,7 @@ fits:
   tibialis_anterior_elongation:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Elongation" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal improved distribution fit, but diagnostics needed stronger sampling.
     draws: 2500 # Integer >= 1. Extra posterior draws because the previous fit had low ESS after retries.
     tune: 3500 # Integer >= 1. Extra warmup so the first configured attempt starts beyond prior retries.
@@ -178,12 +208,42 @@ fits:
   tibialis_anterior_nnd:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "NND" # Metric column name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal substantially improved NND PPC while keeping the same engine status.
-    draws: 2500 # Integer >= 1. Extra posterior draws because previous comparable fits had low ESS.
-    tune: 3500 # Integer >= 1. Extra warmup for the retry-prone TA NND hierarchy.
+    draws: 5000 # Integer >= 1. Increased because the latest run still had R-hat/ESS warnings after retries.
+    tune: 10000 # Integer >= 1. Start at the retry cap for the hardest TA NND geometry.
     chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
-    target_accept: 0.997 # Float in [0.8, 0.999]. Higher target for persistent R-hat and ESS warnings.
+    target_accept: 0.999 # Float in [0.8, 0.999]. Highest configured target for persistent geometry warnings.
+
+  tibialis_anterior_3nnd:
+    muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
+    metric: "3NND" # Clustering metric restricted to Image_Region == center by the analysis code.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; start from the TA NND choice.
+    draws: 3500 # Integer >= 1. Increased because the latest run needed retries before clearing divergences.
+    tune: 7000 # Integer >= 1. Matches the successful retry warmup used by the latest run.
+    chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
+    target_accept: 0.999 # Float in [0.8, 0.999]. Highest configured target to reduce divergence risk.
+
+  tibialis_anterior_5nnd:
+    muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
+    metric: "5NND" # Clustering metric restricted to Image_Region == center by the analysis code.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; start from the TA NND choice.
+    draws: 3500 # Integer >= 1. Increased to match the harder TA neighbor-distance fits.
+    tune: 7000 # Integer >= 1. Extra warmup for the retry-prone TA clustering hierarchy.
+    chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
+    target_accept: 0.999 # Float in [0.8, 0.999]. Highest configured target to reduce divergence risk.
+
+  tibialis_anterior_voronoi_cell_area:
+    muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
+    metric: "Voronoi_Cell_Area" # Clustering metric restricted to Image_Region == center by the analysis code.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; Voronoi areas are positive and typically right-skewed.
+    draws: 3500 # Integer >= 1. Increased to match the harder TA clustering fits.
+    tune: 7000 # Integer >= 1. Extra warmup for the retry-prone TA clustering hierarchy.
+    chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
+    target_accept: 0.999 # Float in [0.8, 0.999]. Highest configured target to reduce divergence risk.
 
   tibialis_anterior_circularity:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.

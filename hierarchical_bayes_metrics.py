@@ -49,11 +49,16 @@ POSITIVE_METRICS = (
     "Minimum_Feret_Diameter",
     "Elongation",
     "NND",
+    "3NND",
+    "5NND",
+    "Voronoi_Cell_Area",
 )
 BOUNDED_METRICS = (
     "Circularity",
     "Solidity",
 )
+CLUSTERING_METRICS = frozenset({"NND", "3NND", "5NND", "Voronoi_Cell_Area"})
+CENTER_IMAGE_REGION = "center"
 GENOTYPE_ORDER = ("Wildtype", "Calpain_3_Knockout")
 SMALL_VALUE = 1e-9
 PPC_POSTERIOR_DRAWS = 200
@@ -575,14 +580,28 @@ def prepare_metric_data(
     wt_label, ko_label = determine_condition_labels(
         [str(value) for value in df["Condition"].dropna().unique().tolist()]
     )
-    df_metric = (
-        df.loc[df["Muscle"] == muscle, ["Condition", "Block", "image", "Id", metric]]
-        .copy()
-        .rename(columns={metric: "value"})
-    )
+    required_columns = ["Condition", "Block", "image", "Id", metric]
+    if metric in CLUSTERING_METRICS:
+        if "Image_Region" not in df.columns:
+            raise ValueError(
+                f"{metric} requires an Image_Region column so clustering metrics "
+                "can be restricted to center instances."
+            )
+        required_columns.append("Image_Region")
+    df_metric = df.loc[df["Muscle"] == muscle, required_columns].copy()
+    if metric in CLUSTERING_METRICS:
+        df_metric = df_metric.loc[
+            df_metric["Image_Region"].astype(str) == CENTER_IMAGE_REGION
+        ].copy()
+    df_metric = df_metric.rename(columns={metric: "value"})
     df_metric["value"] = pd.to_numeric(df_metric["value"], errors="coerce")
+    if metric in CLUSTERING_METRICS:
+        df_metric = df_metric.loc[df_metric["value"] > 0.0].copy()
     df_metric = df_metric.dropna(subset=["Condition", "Block", "image", "value"])
     df_metric = df_metric.sort_values(["Condition", "Block", "image", "Id"]).reset_index(drop=True)
+    if df_metric.empty:
+        region_text = " center-region" if metric in CLUSTERING_METRICS else ""
+        raise ValueError(f"No{region_text} observations available for {muscle} / {metric}.")
 
     raw_values = df_metric["value"].to_numpy(dtype=float)
     values = raw_values.copy()

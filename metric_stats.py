@@ -21,14 +21,14 @@ import pandas as pd
 import seaborn as sns
 from scipy.stats import mannwhitneyu
 
-from stats_utils import maybe_show_current_figure, plot_metric_variants
+from stats_utils import filter_metric_region, maybe_show_current_figure, plot_metric_variants
 
 # Set the style for the plots
 sns.set_style("whitegrid")
 # %% Load and prepare input data
 # Read per-object morphological measurements exported by the pipeline.
 df = pd.read_csv("/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv")
-excluded_measurements = {"Connected_parts"}
+excluded_measurements = {"Connected_parts", "Image_Region"}
 
 # Treat grouping columns as categorical to keep consistent ordering/group handling.
 df["Condition"] = df["Condition"].astype("category")
@@ -44,13 +44,22 @@ metrics = [
     for column in df.columns[6:]
     if column not in excluded_measurements
 ]
+metric_values_df = pd.DataFrame(
+    {
+        metric: pd.to_numeric(
+            filter_metric_region(data=df, metric_name=metric)[metric],
+            errors="coerce",
+        ).reset_index(drop=True)
+        for metric in metrics
+    }
+)
 
 # Count the zero values in each column
-df[metrics].isin([0]).sum()
+metric_values_df.isin([0]).sum()
 
 # %% Plot histograms for all numeric metrics
 # This gives a first-pass view of skew/outliers for each measurement.
-df[metrics].hist(figsize=(25, 8), bins=70, layout=(2, np.ceil(len(metrics) / 2).astype(int)))
+metric_values_df.hist(figsize=(25, 8), bins=70, layout=(2, np.ceil(len(metrics) / 2).astype(int)))
 plt.savefig("/workspaces/mito-counter/data/Calpaine_3/results/figures/histograms.png", dpi=900)
 maybe_show_current_figure()
 # Count the zero values in each column
@@ -79,7 +88,10 @@ units = {
     "Elongation": "",
     "Circularity": "",
     "Solidity": "",
-    "NND": "nm"
+    "NND": "nm",
+    "3NND": "nm",
+    "5NND": "nm",
+    "Voronoi_Cell_Area": "nm^2",
 }
 # %% Generate annotated comparison boxplots
 # All plots are saved to the same figures directory.
@@ -159,8 +171,9 @@ plot_metric_variants(
 # Plot Morphological measurments with Units
 for measurment in metrics:
     if measurment in df.columns:
+        plot_df = filter_metric_region(data=df, metric_name=measurment)
         plot_metric_variants(
-            data=df,
+            data=plot_df,
             x='Muscle',
             y=measurment,
             hue='Condition',
@@ -205,8 +218,10 @@ for muscle in sorted(df["Muscle"].dropna().unique()):
     group_b = df_muscle[df_muscle["Condition"] == conditions[1]]
 
     for measurment in measurment_cols:
-        values_a = group_a[measurment].dropna()
-        values_b = group_b[measurment].dropna()
+        metric_group_a = filter_metric_region(data=group_a, metric_name=measurment)
+        metric_group_b = filter_metric_region(data=group_b, metric_name=measurment)
+        values_a = metric_group_a[measurment].dropna()
+        values_b = metric_group_b[measurment].dropna()
 
         if len(values_a) == 0 or len(values_b) == 0:
             continue

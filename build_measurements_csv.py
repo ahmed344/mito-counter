@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -18,8 +19,13 @@ OUTPUT_CSV = Path("/workspaces/mito-counter/data/Calpaine_3/results/measurments.
 OUTPUT_CLEANED_CSV = Path(
     "/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv"
 )
+OUTPUT_IMAGE_SUMMARY_CSV = Path(
+    "/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned_image_summary.csv"
+)
 MIN_MAJOR_AXIS_PX = 30.0
 MIN_MINOR_AXIS_PX = 5.0
+SPATIAL_RADIUS_BIN_COUNT = 20
+SPATIAL_MAX_RADIUS_FRACTION = 0.25
 PIXEL_SIZE_KEYWORDS = {
     "pixel_size",
     "pixel_size_um",
@@ -547,6 +553,441 @@ def segmentation_touches_edge(
     return left <= 0.0 or right >= (width_px - 1) or top <= 0.0 or bottom >= (height_px - 1)
 
 
+def classify_image_region(
+    *,
+    centroid_x_px: float,
+    centroid_y_px: float,
+    width_px: int,
+    height_px: int,
+) -> str:
+    """Classify a centroid as inside the centered 50%-area square or outside it.
+
+    Args:
+        centroid_x_px (float): Object centroid x-coordinate in pixels.
+        centroid_y_px (float): Object centroid y-coordinate in pixels.
+        width_px (int): Image width in pixels from metadata.
+        height_px (int): Image height in pixels from metadata.
+
+    Returns:
+        str: ``center`` when the centroid is inside the centered square, otherwise ``periphery``.
+    """
+    if width_px <= 0 or height_px <= 0:
+        raise ValueError(f"Image dimensions must be positive, got {width_px}x{height_px}.")
+
+    target_side_px = (0.5 * float(width_px) * float(height_px)) ** 0.5
+    square_side_px = min(target_side_px, float(width_px), float(height_px))
+    half_side_px = square_side_px / 2.0
+    center_x_px = (float(width_px) - 1.0) / 2.0
+    center_y_px = (float(height_px) - 1.0) / 2.0
+    inside_x = abs(centroid_x_px - center_x_px) <= half_side_px
+    inside_y = abs(centroid_y_px - center_y_px) <= half_side_px
+    return "center" if inside_x and inside_y else "periphery"
+
+
+def parse_optional_float(text: str | None) -> float | None:
+    """Parse optional CSV text into a float.
+
+    Args:
+        text (str | None): CSV value that may be blank or missing.
+
+    Returns:
+        float | None: Parsed numeric value, or ``None`` when the value is empty.
+    """
+
+    if text is None or text == "":
+        return None
+    return float(text)
+
+
+def numeric_values(rows: list[dict[str, str]], column: str) -> list[float]:
+    """Collect numeric values for one CSV column.
+
+    Args:
+        rows (list[dict[str, str]]): CSV rows from one image group.
+        column (str): Column name to extract from each row.
+
+    Returns:
+        list[float]: Non-empty values parsed as floats.
+    """
+
+    values: list[float] = []
+    for row in rows:
+        value = parse_optional_float(row.get(column))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def mean_or_none(values: list[float]) -> float | None:
+    """Calculate the arithmetic mean for a list of values.
+
+    Args:
+        values (list[float]): Numeric values to average.
+
+    Returns:
+        float | None: Mean value, or ``None`` when no values are provided.
+    """
+
+    if not values:
+        return None
+    return sum(values) / float(len(values))
+
+
+def sum_or_none(values: list[float]) -> float | None:
+    """Calculate the sum for a list of values.
+
+    Args:
+        values (list[float]): Numeric values to sum.
+
+    Returns:
+        float | None: Summed value, or ``None`` when no values are provided.
+    """
+
+    if not values:
+        return None
+    return sum(values)
+
+
+def coefficient_of_variation(values: list[float]) -> float | None:
+    """Calculate the population coefficient of variation.
+
+    Args:
+        values (list[float]): Numeric values whose variation should be summarized.
+
+    Returns:
+        float | None: Standard deviation divided by the mean, or ``None`` when
+        fewer than two values are available or the mean is zero.
+    """
+
+    if len(values) < 2:
+        return None
+    mean_value = mean_or_none(values)
+    if mean_value is None or mean_value == 0.0:
+        return None
+    variance = sum((value - mean_value) ** 2 for value in values) / float(len(values))
+    return math.sqrt(variance) / mean_value
+
+
+def format_optional_float(value: float | None, digits: int = 8) -> str:
+    """Format optional floating-point output for CSV writing.
+
+    Args:
+        value (float | None): Numeric value to format.
+        digits (int): Number of digits after the decimal point.
+
+    Returns:
+        str: Formatted decimal text, or an empty string when ``value`` is ``None``.
+    """
+
+    if value is None:
+        return ""
+    return f"{value:.{digits}f}"
+
+
+def pairwise_distances_nm(coords_nm: list[tuple[float, float]]) -> list[float]:
+    """Calculate unique pairwise centroid distances in nanometers.
+
+    Args:
+        coords_nm (list[tuple[float, float]]): Centroid coordinates as ``(x, y)``
+            pairs in nanometers.
+
+    Returns:
+        list[float]: Distances for each unique unordered centroid pair.
+    """
+
+    distances: list[float] = []
+    for i, (x_a, y_a) in enumerate(coords_nm):
+        for x_b, y_b in coords_nm[i + 1 :]:
+            distances.append(math.hypot(x_a - x_b, y_a - y_b))
+    return distances
+
+
+def spatial_radii_nm(width_nm: float, height_nm: float) -> list[float]:
+    """Build evenly spaced radii for image-level spatial summaries.
+
+    Args:
+        width_nm (float): Physical image width in nanometers.
+        height_nm (float): Physical image height in nanometers.
+
+    Returns:
+        list[float]: Positive radii up to a fixed fraction of the shorter image side.
+    """
+
+    max_radius = min(width_nm, height_nm) * SPATIAL_MAX_RADIUS_FRACTION
+    if max_radius <= 0.0:
+        return []
+    step = max_radius / float(SPATIAL_RADIUS_BIN_COUNT)
+    return [step * float(index) for index in range(1, SPATIAL_RADIUS_BIN_COUNT + 1)]
+
+
+def trapezoid_integral(x_values: list[float], y_values: list[float]) -> float | None:
+    """Integrate sampled values with the trapezoid rule.
+
+    Args:
+        x_values (list[float]): Monotonic x-axis sample positions.
+        y_values (list[float]): Function values sampled at ``x_values``.
+
+    Returns:
+        float | None: Trapezoid-rule integral, or ``None`` when fewer than two
+        samples are provided.
+    """
+
+    if len(x_values) < 2 or len(x_values) != len(y_values):
+        return None
+    total = 0.0
+    for index in range(1, len(x_values)):
+        width = x_values[index] - x_values[index - 1]
+        total += width * (y_values[index] + y_values[index - 1]) / 2.0
+    return total
+
+
+def ripley_l_integral(
+    coords_nm: list[tuple[float, float]],
+    image_area_nm2: float,
+    radii_nm: list[float],
+) -> float | None:
+    """Integrate signed Ripley L-function deviation from complete spatial randomness.
+
+    Args:
+        coords_nm (list[tuple[float, float]]): Cleaned centroid coordinates in nanometers.
+        image_area_nm2 (float): Physical image area in square nanometers.
+        radii_nm (list[float]): Radii at which to evaluate the L-function.
+
+    Returns:
+        float | None: Integral of ``L(r) - r`` across radii, or ``None`` when the
+        estimate cannot be computed.
+    """
+
+    count = len(coords_nm)
+    if count < 2 or image_area_nm2 <= 0.0 or not radii_nm:
+        return None
+
+    distances = pairwise_distances_nm(coords_nm)
+    deviations = [0.0]
+    for radius in radii_nm:
+        unordered_pairs = sum(1 for distance in distances if distance <= radius)
+        ordered_pairs = 2.0 * float(unordered_pairs)
+        k_value = image_area_nm2 * ordered_pairs / float(count * (count - 1))
+        l_value = math.sqrt(max(k_value, 0.0) / math.pi)
+        deviations.append(l_value - radius)
+    return trapezoid_integral([0.0, *radii_nm], deviations)
+
+
+def pair_correlation_integral(
+    coords_nm: list[tuple[float, float]],
+    image_area_nm2: float,
+    radii_nm: list[float],
+) -> float | None:
+    """Integrate signed pair-correlation deviation from complete spatial randomness.
+
+    Args:
+        coords_nm (list[tuple[float, float]]): Cleaned centroid coordinates in nanometers.
+        image_area_nm2 (float): Physical image area in square nanometers.
+        radii_nm (list[float]): Annular outer radii used to estimate ``g(r)``.
+
+    Returns:
+        float | None: Integral of ``g(r) - 1`` across annular radii, or ``None``
+        when the estimate cannot be computed.
+    """
+
+    count = len(coords_nm)
+    if count < 2 or image_area_nm2 <= 0.0 or not radii_nm:
+        return None
+
+    distances = pairwise_distances_nm(coords_nm)
+    previous_radius = 0.0
+    total = 0.0
+    for radius in radii_nm:
+        annulus_area = math.pi * (radius**2 - previous_radius**2)
+        if annulus_area <= 0.0:
+            previous_radius = radius
+            continue
+        unordered_pairs = sum(
+            1 for distance in distances if previous_radius < distance <= radius
+        )
+        ordered_pairs = 2.0 * float(unordered_pairs)
+        g_value = image_area_nm2 * ordered_pairs / (
+            float(count * (count - 1)) * annulus_area
+        )
+        total += (g_value - 1.0) * (radius - previous_radius)
+        previous_radius = radius
+    return total
+
+
+def summarize_image_rows(
+    rows: list[dict[str, str]],
+    image_record: ImageRecord,
+) -> dict[str, str]:
+    """Summarize cleaned instance rows for one image.
+
+    Args:
+        rows (list[dict[str, str]]): Cleaned measurement rows belonging to one image.
+        image_record (ImageRecord): Metadata and calibration for the image.
+
+    Returns:
+        dict[str, str]: CSV-ready image-level summary values.
+    """
+
+    width_nm = float(image_record.width_px) * image_record.pixel_size_nm
+    height_nm = float(image_record.height_px) * image_record.pixel_size_nm
+    image_area_nm2 = width_nm * height_nm
+    center_rows = [
+        row for row in rows if row.get("Image_Region", "").strip().lower() == "center"
+    ]
+    coords_nm = [
+        parse_centroid(get_first_value(row, ["Centroid", "centroid"])) for row in rows
+    ]
+    radii_nm = spatial_radii_nm(width_nm, height_nm)
+
+    summary = {
+        "Density": str(len(rows)),
+        "Image_width_px": str(image_record.width_px),
+        "Image_height_px": str(image_record.height_px),
+        "Pixel_size_nm": format_optional_float(image_record.pixel_size_nm, digits=8),
+        "Image_area_nm2": format_optional_float(image_area_nm2, digits=8),
+        "Area_sum": format_optional_float(sum_or_none(numeric_values(rows, "Area"))),
+        "Corrected_area_sum": format_optional_float(
+            sum_or_none(numeric_values(rows, "Corrected_area"))
+        ),
+        "Minimum_Feret_Diameter_sum": format_optional_float(
+            sum_or_none(numeric_values(rows, "Minimum_Feret_Diameter")), digits=6
+        ),
+        "Minor_axis_length_sum": format_optional_float(
+            sum_or_none(numeric_values(rows, "Minor_axis_length")), digits=6
+        ),
+        "Area_mean": format_optional_float(mean_or_none(numeric_values(rows, "Area"))),
+        "Corrected_area_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Corrected_area"))
+        ),
+        "Minimum_Feret_Diameter_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Minimum_Feret_Diameter")), digits=6
+        ),
+        "Major_axis_length_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Major_axis_length")), digits=6
+        ),
+        "Minor_axis_length_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Minor_axis_length")), digits=6
+        ),
+        "Elongation_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Elongation")), digits=6
+        ),
+        "Circularity_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Circularity")), digits=6
+        ),
+        "Solidity_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Solidity")), digits=6
+        ),
+        "NND_center_mean": format_optional_float(
+            mean_or_none(numeric_values(center_rows, "NND")), digits=6
+        ),
+        "3NND_center_mean": format_optional_float(
+            mean_or_none(numeric_values(center_rows, "3NND")), digits=6
+        ),
+        "5NND_center_mean": format_optional_float(
+            mean_or_none(numeric_values(center_rows, "5NND")), digits=6
+        ),
+        "Voronoi_Cell_Area_center_mean": format_optional_float(
+            mean_or_none(numeric_values(center_rows, "Voronoi_Cell_Area"))
+        ),
+        "Voronoi_Cell_Area_center_cv": format_optional_float(
+            coefficient_of_variation(numeric_values(center_rows, "Voronoi_Cell_Area")),
+            digits=8,
+        ),
+        "Ripley_L_integral": format_optional_float(
+            ripley_l_integral(coords_nm, image_area_nm2, radii_nm)
+        ),
+        "Pair_Correlation_integral": format_optional_float(
+            pair_correlation_integral(coords_nm, image_area_nm2, radii_nm)
+        ),
+    }
+    return summary
+
+
+def write_image_summary_csv(
+    cleaned_csv: Path,
+    image_summary_csv: Path,
+    image_records: dict[tuple[str, str, str], ImageRecord],
+) -> int:
+    """Write one cleaned-measurement summary row per image.
+
+    Args:
+        cleaned_csv (Path): Cleaned instance-level measurements CSV path.
+        image_summary_csv (Path): Destination image-level summary CSV path.
+        image_records (dict[tuple[str, str, str], ImageRecord]): Per-image metadata
+            keyed by ``(Condition, Muscle, image)``.
+
+    Returns:
+        int: Number of image summary rows written.
+    """
+
+    grouped_rows: dict[tuple[str, str, str, str], list[dict[str, str]]] = {}
+    with open(cleaned_csv, "r", newline="", encoding="utf-8") as in_handle:
+        reader = csv.DictReader(in_handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"Missing CSV header in: {cleaned_csv}")
+        for row in reader:
+            condition = get_first_value(row, ["Condition"])
+            muscle = get_first_value(row, ["Muscle"])
+            block = get_first_value(row, ["Block"])
+            image = get_first_value(row, ["image"])
+            grouped_rows.setdefault((condition, muscle, block, image), []).append(row)
+
+    fieldnames = [
+        "Condition",
+        "Muscle",
+        "Block",
+        "image",
+        "Density",
+        "Image_width_px",
+        "Image_height_px",
+        "Pixel_size_nm",
+        "Image_area_nm2",
+        "Area_sum",
+        "Corrected_area_sum",
+        "Minimum_Feret_Diameter_sum",
+        "Minor_axis_length_sum",
+        "Area_mean",
+        "Corrected_area_mean",
+        "Minimum_Feret_Diameter_mean",
+        "Major_axis_length_mean",
+        "Minor_axis_length_mean",
+        "Elongation_mean",
+        "Circularity_mean",
+        "Solidity_mean",
+        "NND_center_mean",
+        "3NND_center_mean",
+        "5NND_center_mean",
+        "Voronoi_Cell_Area_center_mean",
+        "Voronoi_Cell_Area_center_cv",
+        "Ripley_L_integral",
+        "Pair_Correlation_integral",
+    ]
+
+    image_summary_csv.parent.mkdir(parents=True, exist_ok=True)
+    with open(image_summary_csv, "w", newline="", encoding="utf-8") as out_handle:
+        writer = csv.DictWriter(out_handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for condition, muscle, block, image in sorted(grouped_rows):
+            image_record = image_records.get((condition, muscle, image))
+            if image_record is None:
+                raise KeyError(
+                    f"Missing image metadata for: {(condition, muscle, image)}"
+                )
+            summary = summarize_image_rows(
+                grouped_rows[(condition, muscle, block, image)], image_record
+            )
+            writer.writerow(
+                {
+                    "Condition": condition,
+                    "Muscle": muscle,
+                    "Block": block,
+                    "image": image,
+                    **summary,
+                }
+            )
+    return len(grouped_rows)
+
+
 def clean_measurements_csv(
     measurements_csv: Path,
     cleaned_csv: Path,
@@ -669,6 +1110,7 @@ def main() -> None:
         "image",
         "Id",
         "Centroid",
+        "Image_Region",
         "Area",
         "Corrected_area",
         "Major_axis_length",
@@ -678,6 +1120,9 @@ def main() -> None:
         "Circularity",
         "Solidity",
         "NND",
+        "3NND",
+        "5NND",
+        "Voronoi_Cell_Area",
         "Connected_parts",
     ]
 
@@ -738,12 +1183,20 @@ def main() -> None:
                     nnd_text = get_first_value(
                         row, ["NND", "Nearest Neighbor Distance (NND)"], required=False
                     )
+                    third_nnd_text = get_first_value(row, ["3NND"], required=False)
+                    fifth_nnd_text = get_first_value(row, ["5NND"], required=False)
+                    voronoi_area_text = get_first_value(
+                        row, ["Voronoi_Cell_Area"], required=False
+                    )
 
                     corrected_area_val = maybe_float(corrected_area_text)
                     major_val = maybe_float(major_text)
                     minor_val = maybe_float(minor_text)
                     min_feret_val = maybe_float(min_feret_text)
                     nnd_val = maybe_float(nnd_text)
+                    third_nnd_val = maybe_float(third_nnd_text)
+                    fifth_nnd_val = maybe_float(fifth_nnd_text)
+                    voronoi_area_val = maybe_float(voronoi_area_text)
 
                     corrected_area_nm2 = (
                         corrected_area_val * (image_record.pixel_size_nm**2)
@@ -764,6 +1217,21 @@ def main() -> None:
                     nnd_nm = (
                         nnd_val * image_record.pixel_size_nm if nnd_val is not None else None
                     )
+                    third_nnd_nm = (
+                        third_nnd_val * image_record.pixel_size_nm
+                        if third_nnd_val is not None
+                        else None
+                    )
+                    fifth_nnd_nm = (
+                        fifth_nnd_val * image_record.pixel_size_nm
+                        if fifth_nnd_val is not None
+                        else None
+                    )
+                    voronoi_area_nm2 = (
+                        voronoi_area_val * (image_record.pixel_size_nm**2)
+                        if voronoi_area_val is not None
+                        else None
+                    )
 
                     writer.writerow(
                         {
@@ -773,6 +1241,12 @@ def main() -> None:
                             "image": image_label,
                             "Id": get_first_value(row, ["Id", "id"]),
                             "Centroid": f"({centroid_x_nm:.6f}, {centroid_y_nm:.6f})",
+                            "Image_Region": classify_image_region(
+                                centroid_x_px=centroid_x_px,
+                                centroid_y_px=centroid_y_px,
+                                width_px=image_record.width_px,
+                                height_px=image_record.height_px,
+                            ),
                             "Area": f"{area_nm2:.8f}",
                             "Corrected_area": ""
                             if corrected_area_nm2 is None
@@ -796,6 +1270,15 @@ def main() -> None:
                                 row, ["Solidity", "Solidity (Branching)"]
                             ),
                             "NND": "" if nnd_nm is None else f"{nnd_nm:.6f}",
+                            "3NND": ""
+                            if third_nnd_nm is None
+                            else f"{third_nnd_nm:.6f}",
+                            "5NND": ""
+                            if fifth_nnd_nm is None
+                            else f"{fifth_nnd_nm:.6f}",
+                            "Voronoi_Cell_Area": ""
+                            if voronoi_area_nm2 is None
+                            else f"{voronoi_area_nm2:.8f}",
                             "Connected_parts": get_first_value(
                                 row, ["Connected_parts", "connected_parts"], required=False
                             )
@@ -816,10 +1299,16 @@ def main() -> None:
         min_major_axis_px=MIN_MAJOR_AXIS_PX,
         min_minor_axis_px=MIN_MINOR_AXIS_PX,
     )
+    image_summary_rows = write_image_summary_csv(
+        cleaned_csv=OUTPUT_CLEANED_CSV,
+        image_summary_csv=OUTPUT_IMAGE_SUMMARY_CSV,
+        image_records=image_records,
+    )
     removed_total = removed_axis_size + removed_edge_touch + removed_disconnected_parts
     pixel_size_sources = Counter(record.pixel_size_source for record in image_records.values())
     print(f"Wrote full measurements CSV: {OUTPUT_CSV}")
     print(f"Wrote cleaned measurements CSV: {OUTPUT_CLEANED_CSV}")
+    print(f"Wrote image summary CSV: {OUTPUT_IMAGE_SUMMARY_CSV}")
     print(f"Resolved pixel size sources: {dict(pixel_size_sources)}")
     print(
         "Cleaning summary: "
@@ -827,6 +1316,7 @@ def main() -> None:
         f"axis_size={removed_axis_size}, edge_touch={removed_edge_touch}, "
         f"disconnected_parts={removed_disconnected_parts}"
     )
+    print(f"Image summary rows: {image_summary_rows}")
 
 
 if __name__ == "__main__":

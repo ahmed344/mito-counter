@@ -23,6 +23,8 @@ SUPERPLOT_ANNOTATION_BASE_Y = 1.02
 SUPERPLOT_ANNOTATION_BRACKET_HEIGHT = 0.025
 SUPERPLOT_ANNOTATION_TEXT_OFFSET = 0.008
 SUPERPLOT_ANNOTATION_STACK_GAP = 0.07
+CLUSTERING_METRICS = frozenset({"NND", "3NND", "5NND", "Voronoi_Cell_Area"})
+CENTER_IMAGE_REGION = "center"
 
 
 def maybe_show_current_figure():
@@ -85,6 +87,43 @@ def sort_block_values(values):
         return sorted(normalized_values, key=lambda value: (1, value))
 
 
+def metric_uses_center_region(metric_name):
+    """Return whether a metric should use only central image instances.
+
+    Args:
+        metric_name (str): Measurement column name to check.
+
+    Returns:
+        bool: ``True`` for clustering metrics that should exclude peripheral instances.
+    """
+    return str(metric_name) in CLUSTERING_METRICS
+
+
+def filter_metric_region(data, metric_name):
+    """Filter clustering metrics to valid center-region observations.
+
+    Args:
+        data (pd.DataFrame): Measurement dataframe that may contain ``Image_Region``.
+        metric_name (str): Measurement column name being analyzed or plotted.
+
+    Returns:
+        pd.DataFrame: Original dataframe for non-clustering metrics, or center-region rows
+        with positive metric values for clustering metrics.
+    """
+    if not metric_uses_center_region(metric_name):
+        return data
+    if "Image_Region" not in data.columns:
+        raise ValueError(
+            f"{metric_name} requires an Image_Region column so clustering metrics "
+            "can be restricted to center instances."
+        )
+    filtered = data.loc[data["Image_Region"].astype(str) == CENTER_IMAGE_REGION].copy()
+    if metric_name in filtered.columns:
+        metric_values = pd.to_numeric(filtered[metric_name], errors="coerce")
+        filtered = filtered.loc[metric_values > 0.0].copy()
+    return filtered
+
+
 def prepare_plot_data(data, x, y, hue, block=None):
     """Prepare a plotting dataframe with numeric coercion and NA filtering.
 
@@ -98,7 +137,7 @@ def prepare_plot_data(data, x, y, hue, block=None):
     Returns:
         pd.DataFrame: Filtered dataframe ready for plotting.
     """
-    plot_data = data.copy()
+    plot_data = filter_metric_region(data=data, metric_name=y).copy()
     plot_data[y] = pd.to_numeric(plot_data[y], errors="coerce")
 
     required_columns = [x, y, hue]

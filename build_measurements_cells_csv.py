@@ -600,6 +600,37 @@ def segmentation_touches_cell_edge(
     return centroid_to_membrane_px <= (major_axis_px / 2.0)
 
 
+def classify_image_region(
+    *,
+    centroid_x_px: float,
+    centroid_y_px: float,
+    width_px: int,
+    height_px: int,
+) -> str:
+    """Classify a centroid as inside the centered 50%-area square or outside it.
+
+    Args:
+        centroid_x_px (float): Object centroid x-coordinate in pixels.
+        centroid_y_px (float): Object centroid y-coordinate in pixels.
+        width_px (int): Image width in pixels from metadata.
+        height_px (int): Image height in pixels from metadata.
+
+    Returns:
+        str: ``center`` when the centroid is inside the centered square, otherwise ``periphery``.
+    """
+    if width_px <= 0 or height_px <= 0:
+        raise ValueError(f"Image dimensions must be positive, got {width_px}x{height_px}.")
+
+    target_side_px = (0.5 * float(width_px) * float(height_px)) ** 0.5
+    square_side_px = min(target_side_px, float(width_px), float(height_px))
+    half_side_px = square_side_px / 2.0
+    center_x_px = (float(width_px) - 1.0) / 2.0
+    center_y_px = (float(height_px) - 1.0) / 2.0
+    inside_x = abs(centroid_x_px - center_x_px) <= half_side_px
+    inside_y = abs(centroid_y_px - center_y_px) <= half_side_px
+    return "center" if inside_x and inside_y else "periphery"
+
+
 def clean_measurements_csv(
     measurements_csv: Path,
     cleaned_csv: Path,
@@ -696,6 +727,8 @@ def build_output_row(
     image_label: str,
     pixel_size_um: float,
     membrane_distance_px: float,
+    image_width_px: int,
+    image_height_px: int,
 ) -> dict[str, str]:
     """Convert one metrics row into the consolidated output schema.
 
@@ -707,6 +740,8 @@ def build_output_row(
         image_label (str): Image stem without file extension.
         pixel_size_um (float): Micrometers per pixel for this image.
         membrane_distance_px (float): Centroid-to-membrane distance in pixels.
+        image_width_px (int): Image width in pixels from metadata.
+        image_height_px (int): Image height in pixels from metadata.
 
     Returns:
         dict[str, str]: Normalized output row ready for the consolidated CSV writer.
@@ -736,12 +771,18 @@ def build_output_row(
     nnd_text = get_first_value(
         row, ["NND", "Nearest Neighbor Distance (NND)"], required=False
     )
+    third_nnd_text = get_first_value(row, ["3NND"], required=False)
+    fifth_nnd_text = get_first_value(row, ["5NND"], required=False)
+    voronoi_area_text = get_first_value(row, ["Voronoi_Cell_Area"], required=False)
 
     corrected_area_val = maybe_float(corrected_area_text)
     major_val = maybe_float(major_text)
     minor_val = maybe_float(minor_text)
     min_feret_val = maybe_float(min_feret_text)
     nnd_val = maybe_float(nnd_text)
+    third_nnd_val = maybe_float(third_nnd_text)
+    fifth_nnd_val = maybe_float(fifth_nnd_text)
+    voronoi_area_val = maybe_float(voronoi_area_text)
 
     corrected_area_um2 = (
         corrected_area_val * (pixel_size_um ** 2)
@@ -752,6 +793,17 @@ def build_output_row(
     minor_um = minor_val * pixel_size_um if minor_val is not None else None
     min_feret_um = min_feret_val * pixel_size_um if min_feret_val is not None else None
     nnd_um = nnd_val * pixel_size_um if nnd_val is not None else None
+    third_nnd_um = (
+        third_nnd_val * pixel_size_um if third_nnd_val is not None else None
+    )
+    fifth_nnd_um = (
+        fifth_nnd_val * pixel_size_um if fifth_nnd_val is not None else None
+    )
+    voronoi_area_um2 = (
+        voronoi_area_val * (pixel_size_um ** 2)
+        if voronoi_area_val is not None
+        else None
+    )
     membrane_distance_um = membrane_distance_px * pixel_size_um
 
     return {
@@ -761,6 +813,12 @@ def build_output_row(
         "image": image_label,
         "Id": get_first_value(row, ["Id", "id"]),
         "Centroid": f"({cx_um:.6f}, {cy_um:.6f})",
+        "Image_Region": classify_image_region(
+            centroid_x_px=cx_px,
+            centroid_y_px=cy_px,
+            width_px=image_width_px,
+            height_px=image_height_px,
+        ),
         "Area": f"{area_um2:.8f}",
         "Corrected_area": ""
         if corrected_area_um2 is None
@@ -778,6 +836,11 @@ def build_output_row(
         "Circularity": get_first_value(row, ["Circularity", "Circularity (Form Factor)"]),
         "Solidity": get_first_value(row, ["Solidity", "Solidity (Branching)"]),
         "NND": "" if nnd_um is None else f"{nnd_um:.6f}",
+        "3NND": "" if third_nnd_um is None else f"{third_nnd_um:.6f}",
+        "5NND": "" if fifth_nnd_um is None else f"{fifth_nnd_um:.6f}",
+        "Voronoi_Cell_Area": ""
+        if voronoi_area_um2 is None
+        else f"{voronoi_area_um2:.8f}",
         "Connected_parts": get_first_value(
             row, ["Connected_parts", "connected_parts"], required=False
         )
@@ -828,6 +891,7 @@ def main() -> None:
         "image",
         "Id",
         "Centroid",
+        "Image_Region",
         "Area",
         "Corrected_area",
         "Major_axis_length",
@@ -837,6 +901,9 @@ def main() -> None:
         "Circularity",
         "Solidity",
         "NND",
+        "3NND",
+        "5NND",
+        "Voronoi_Cell_Area",
         "Connected_parts",
         "Distance_to_cell_membrane",
     ]
@@ -900,6 +967,8 @@ def main() -> None:
                             image_label=image_label,
                             pixel_size_um=record.pixel_size_um,
                             membrane_distance_px=membrane_distance_px,
+                            image_width_px=record.width_px,
+                            image_height_px=record.height_px,
                         )
                     )
 
