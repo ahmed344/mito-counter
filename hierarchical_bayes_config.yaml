@@ -11,8 +11,11 @@ runtime:
   cores: 30 # Integer >= 1. Number of CPU cores handed to PyMC sampling.
   seed: 20260415 # Integer >= 0. Base random seed; each fit gets a deterministic offset.
   save_idata: true # Boolean. `true` saves NetCDF traces for later visualization; `false` skips trace writing.
-  summary_update_mode: "replace" # Options: `merge` updates only rerun muscle/metric rows; `replace` overwrites the full summary CSV.
+  summary_update_mode: "merge" # Options: `merge` updates only rerun muscle/metric rows; `replace` overwrites the full summary CSV.
   visualization_refresh_mode: "rerun_missing_traces" # Options: `never`, `refit_first`, `rerun_missing_traces`.
+  retry_max_draws: 10000 # Integer >= 1. Upper cap for adaptive retry posterior draws per chain.
+  retry_max_tune: 10000 # Integer >= 1. Upper cap for adaptive retry warmup draws per chain.
+  retry_max_target_accept: 0.999 # Float in [0.8, 0.999]. Upper cap for adaptive retry NUTS target acceptance.
 
 available_options:
   positive_likelihoods: ["gamma", "lognormal"] # Legal likelihoods for positive metrics such as Area, NND, or Elongation.
@@ -75,7 +78,7 @@ fits:
   soleus_elongation:
     muscle: "Soleus" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Elongation" # Metric column name from the measurements table.
-    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal better matched the shifted Elongation tail behavior.
     draws: 1500 # Integer >= 1. Safety margin above the successful retry for shifted Elongation.
     tune: 2500 # Integer >= 1. Extra warmup to avoid repeating the automatic second attempt.
@@ -147,10 +150,10 @@ fits:
     metric: "Minor_axis_length" # Metric column name from the measurements table.
     repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "gamma" # Positive metric option: `gamma` or `lognormal`; gamma remained slightly stronger and more stable for this metric.
-    draws: 1500 # Integer >= 1. Safety margin above the previous second-attempt settings.
-    tune: 2500 # Integer >= 1. Extra warmup to avoid repeating the automatic retry.
+    draws: 2500 # Integer >= 1. Extra posterior draws for the low bulk-ESS image-variance hierarchy.
+    tune: 3500 # Integer >= 1. Extra warmup for the slowly mixing image-variance hierarchy.
     chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
-    target_accept: 0.995 # Float in [0.8, 0.999]. Conservative target for retry-prone geometry.
+    target_accept: 0.997 # Float in [0.8, 0.999]. Higher target for the low-ESS image-variance geometry.
 
   tibialis_anterior_minimum_feret_diameter:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
@@ -165,7 +168,7 @@ fits:
   tibialis_anterior_elongation:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Elongation" # Metric column name from the measurements table.
-    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal improved distribution fit, but diagnostics needed stronger sampling.
     draws: 2500 # Integer >= 1. Extra posterior draws because the previous fit had low ESS after retries.
     tune: 3500 # Integer >= 1. Extra warmup so the first configured attempt starts beyond prior retries.
@@ -185,19 +188,19 @@ fits:
   tibialis_anterior_circularity:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Circularity" # Bounded metric name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "logit_skew_normal" # For bounded metrics use `beta`, `zero_one_inflated_beta`, `logitnormal`, or `logit_skew_normal`; logit_skew_normal is now the default open-interval bounded likelihood.
-    draws: 1500 # Integer >= 1. Posterior draws per chain for this hardest bounded fit.
-    tune: 2500 # Integer >= 1. Warmup draws per chain for this hardest bounded fit.
+    draws: 3000 # Integer >= 1. Extra posterior draws for low ESS in image-level bounded dispersion.
+    tune: 5000 # Integer >= 1. Longer warmup for the bounded image-level sigma hierarchy.
     chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
-    target_accept: 0.995 # Float in [0.8, 0.999]. Highest bounded acceptance target retained for the harder logitnormal fit.
+    target_accept: 0.998 # Float in [0.8, 0.999]. Higher target for the difficult bounded image-sigma geometry.
 
   tibialis_anterior_solidity:
     muscle: "Tibialis Anterior" # Muscle label exactly as it appears in the `Muscle` column.
     metric: "Solidity" # Bounded metric name from the measurements table.
-    repeat: false # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
+    repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "logit_skew_normal" # For bounded metrics use `beta`, `zero_one_inflated_beta`, `logitnormal`, or `logit_skew_normal`; logit_skew_normal is now preferred for bounded metrics without exact boundary mass.
-    draws: 1500 # Integer >= 1. Posterior draws per chain for this hardest TA bounded fit.
-    tune: 2500 # Integer >= 1. Warmup draws per chain for this hardest TA bounded fit.
+    draws: 3000 # Integer >= 1. Extra posterior draws for the hardest near-boundary bounded fit.
+    tune: 5000 # Integer >= 1. Longer warmup to reduce divergences in near-boundary bounded geometry.
     chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
-    target_accept: 0.995 # Float in [0.8, 0.999]. Highest bounded acceptance target for the harder logitnormal geometry.
+    target_accept: 0.998 # Float in [0.8, 0.999]. Higher target to reduce divergences in near-boundary bounded geometry.

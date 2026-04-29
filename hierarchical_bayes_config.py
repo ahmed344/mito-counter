@@ -42,6 +42,9 @@ class BayesRuntimeConfig:
     save_idata: bool
     summary_update_mode: str
     visualization_refresh_mode: str
+    retry_max_draws: int
+    retry_max_tune: int
+    retry_max_target_accept: float
 
 
 @dataclass(frozen=True)
@@ -260,6 +263,9 @@ def parse_runtime_section(section: dict[str, Any]) -> BayesRuntimeConfig:
             "save_idata",
             "summary_update_mode",
             "visualization_refresh_mode",
+            "retry_max_draws",
+            "retry_max_tune",
+            "retry_max_target_accept",
         },
     )
     summary_update_mode = require_string(
@@ -288,6 +294,15 @@ def parse_runtime_section(section: dict[str, Any]) -> BayesRuntimeConfig:
         save_idata=require_bool("runtime", "save_idata", section["save_idata"]),
         summary_update_mode=summary_update_mode,
         visualization_refresh_mode=visualization_refresh_mode,
+        retry_max_draws=require_int("runtime", "retry_max_draws", section["retry_max_draws"]),
+        retry_max_tune=require_int("runtime", "retry_max_tune", section["retry_max_tune"]),
+        retry_max_target_accept=require_float(
+            "runtime",
+            "retry_max_target_accept",
+            section["retry_max_target_accept"],
+            minimum=0.8,
+            maximum=0.999,
+        ),
     )
 
 

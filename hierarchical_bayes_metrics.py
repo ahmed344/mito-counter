@@ -1069,11 +1069,11 @@ def build_bounded_model(data: PreparedMetricData) -> pm.Model:
             animal_logit_sigma = pm.HalfNormal("animal_logit_sigma", sigma=0.75)
             log_image_sigma_genotype = pm.Normal(
                 "log_image_sigma_genotype",
-                mu=np.log(0.35),
-                sigma=1.0,
+                mu=np.log(0.12),
+                sigma=0.6,
                 dims="genotype",
             )
-            sigma_log_image_sigma = pm.HalfNormal("sigma_log_image_sigma", sigma=0.5)
+            sigma_log_image_sigma = pm.HalfNormal("sigma_log_image_sigma", sigma=0.25)
             image_sigma_offset = pm.Normal("image_sigma_offset", mu=0.0, sigma=1.0, dims="image")
             log_mito_sigma_genotype = pm.Normal(
                 "log_mito_sigma_genotype",
@@ -1803,6 +1803,9 @@ def sampling_plan(
     target_accept: float,
     attempt_index: int,
     warning_message: str,
+    retry_max_draws: int,
+    retry_max_tune: int,
+    retry_max_target_accept: float,
 ) -> tuple[int, int, float]:
     """Return adaptive sampling settings for a retry attempt.
 
@@ -1812,6 +1815,9 @@ def sampling_plan(
         target_accept (float): Current NUTS target acceptance rate.
         attempt_index (int): Zero-based retry attempt index.
         warning_message (str): Warning labels from the previous fit.
+        retry_max_draws (int): Upper cap for adaptive retry posterior draws per chain.
+        retry_max_tune (int): Upper cap for adaptive retry warmup draws per chain.
+        retry_max_target_accept (float): Upper cap for adaptive retry NUTS target acceptance.
 
     Returns:
         tuple[int, int, float]: Updated `(draws, tune, target_accept)` values.
@@ -1820,16 +1826,28 @@ def sampling_plan(
     if attempt_index == 0:
         return draws, tune, target_accept
 
-    next_draws = max(draws, 1000)
-    next_tune = max(tune, 1500)
+    warning_text = str(warning_message)
+    has_divergences = "divergences" in warning_text
+    has_mixing_warning = any(
+        warning_label in warning_text
+        for warning_label in ("rhat_gt_1.01", "ess_bulk_lt_400", "ess_tail_lt_400")
+    )
+
+    draw_multiplier = 1.5 if has_mixing_warning else 1.0
+    tune_multiplier = 1.5 if has_divergences else 1.25 if has_mixing_warning else 1.0
     next_target_accept = max(target_accept, 0.99)
-    if "divergences" in warning_message:
-        next_tune = max(next_tune, 2000)
-        next_target_accept = max(next_target_accept, 0.995)
+    if has_divergences:
+        next_target_accept = max(next_target_accept, min(target_accept + 0.001, retry_max_target_accept), 0.995)
+
     if attempt_index >= 2:
-        next_draws = max(next_draws, 1500)
-        next_tune = max(next_tune, 2500)
-        next_target_accept = max(next_target_accept, 0.995)
+        draw_multiplier = max(draw_multiplier, 2.0 if has_mixing_warning else 1.25)
+        tune_multiplier = max(tune_multiplier, 2.0 if has_divergences else 1.5)
+        if has_divergences:
+            next_target_accept = retry_max_target_accept
+
+    next_draws = min(int(np.ceil(draws * draw_multiplier)), retry_max_draws)
+    next_tune = min(int(np.ceil(tune * tune_multiplier)), retry_max_tune)
+    next_target_accept = min(next_target_accept, retry_max_target_accept)
     return next_draws, next_tune, next_target_accept
 
 
@@ -2154,6 +2172,9 @@ def analyze_metric(
     cores: int,
     target_accept: float,
     random_seed: int,
+    retry_max_draws: int,
+    retry_max_tune: int,
+    retry_max_target_accept: float,
 ) -> MetricAnalysisResult:
     """Fit one metric within one muscle and return a summary row.
 
@@ -2169,6 +2190,9 @@ def analyze_metric(
         cores (int): Number of CPU cores used by PyMC.
         target_accept (float): NUTS target acceptance rate.
         random_seed (int): Random seed for reproducible sampling and PPC.
+        retry_max_draws (int): Upper cap for adaptive retry posterior draws per chain.
+        retry_max_tune (int): Upper cap for adaptive retry warmup draws per chain.
+        retry_max_target_accept (float): Upper cap for adaptive retry NUTS target acceptance.
 
     Returns:
         MetricAnalysisResult: Winning summary row plus prepared data and posterior samples.
@@ -2191,6 +2215,9 @@ def analyze_metric(
             target_accept=target_accept,
             attempt_index=attempt_index,
             warning_message=engine_warning_message,
+            retry_max_draws=retry_max_draws,
+            retry_max_tune=retry_max_tune,
+            retry_max_target_accept=retry_max_target_accept,
         )
         try:
             model = build_model(data)
@@ -2401,6 +2428,9 @@ def main() -> None:
             cores=config.runtime.cores,
             target_accept=fit_config.target_accept,
             random_seed=seed,
+            retry_max_draws=config.runtime.retry_max_draws,
+            retry_max_tune=config.runtime.retry_max_tune,
+            retry_max_target_accept=config.runtime.retry_max_target_accept,
         )
         finalized_result = finalize_fit_artifacts(
             result=result,
