@@ -71,19 +71,80 @@ maybe_show_current_figure()
 
 # %% Human-readable units for y-axis labels
 units = {
-    "Area": "um^2",
-    "Corrected_area": "um^2",
-    "Major_axis_length": "um",
-    "Minor_axis_length": "um",
-    "Minimum_Feret_Diameter": "um",
+    "Area": "nm^2",
+    "Corrected_area": "nm^2",
+    "Major_axis_length": "nm",
+    "Minor_axis_length": "nm",
+    "Minimum_Feret_Diameter": "nm",
     "Elongation": "",
     "Circularity": "",
     "Solidity": "",
-    "NND": "um"
+    "NND": "nm"
 }
 # %% Generate annotated comparison boxplots
 # All plots are saved to the same figures directory.
 save_dir = Path('/workspaces/mito-counter/data/Calpaine_3/results/figures')
+bayesian_summary_csv = Path("/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics.csv")
+
+
+def load_bayesian_superplot_annotations(summary_csv):
+    """Load compact Bayesian BF labels for superplot WT-vs-KO annotations.
+
+    Args:
+        summary_csv (Path): CSV path containing hierarchical Bayesian summary rows.
+
+    Returns:
+        pd.DataFrame: Summary rows with the columns needed to annotate superplots.
+    """
+
+    required_columns = {
+        "metric",
+        "muscle",
+        "wt_label",
+        "ko_label",
+        "delta_mean_bf_annotation",
+    }
+    if not summary_csv.exists():
+        return pd.DataFrame(columns=sorted(required_columns))
+    summary_df = pd.read_csv(summary_csv)
+    if not required_columns.issubset(summary_df.columns):
+        missing_columns = sorted(required_columns - set(summary_df.columns))
+        print(f"Skipping Bayesian BF superplot annotations: missing columns {missing_columns}.")
+        return pd.DataFrame(columns=sorted(required_columns))
+    return summary_df
+
+
+def bayesian_annotations_for_metric(summary_df, metric):
+    """Build per-muscle BF annotation records for one metric.
+
+    Args:
+        summary_df (pd.DataFrame): Bayesian summary table loaded from disk.
+        metric (str): Metric name currently being plotted.
+
+    Returns:
+        list[dict[str, str]]: Annotation records consumed by the superplot helpers.
+    """
+
+    if summary_df.empty:
+        return []
+    metric_rows = summary_df.loc[summary_df["metric"].astype(str) == str(metric)]
+    annotations = []
+    for _, row in metric_rows.iterrows():
+        label = str(row.get("delta_mean_bf_annotation", "")).strip()
+        if not label or label.lower() == "nan":
+            continue
+        annotations.append(
+            {
+                "x": str(row["muscle"]),
+                "label": label,
+                "hue_start": str(row["wt_label"]),
+                "hue_end": str(row["ko_label"]),
+            }
+        )
+    return annotations
+
+
+bayesian_summary_df = load_bayesian_superplot_annotations(summary_csv=bayesian_summary_csv)
 
 # Plot Counts (No units needed, or you can add "objects" if you like)
 plot_metric_variants(
@@ -105,7 +166,11 @@ for measurment in metrics:
             hue='Condition',
             block='Block',
             unit_dict=units,
-            save_dir=save_dir
+            save_dir=save_dir,
+            superplot_annotations=bayesian_annotations_for_metric(
+                summary_df=bayesian_summary_df,
+                metric=measurment,
+            ),
         )
 
 # %% Run statistical tests and export results
