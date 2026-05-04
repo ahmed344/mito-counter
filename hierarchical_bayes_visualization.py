@@ -19,6 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from hierarchical_bayes_config import (
+    BayesAnalysisConfig,
     BayesFitConfig,
     DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH,
     fit_config_for_pair,
@@ -30,13 +31,18 @@ from hierarchical_bayes_metrics import (
     BOUNDED_LIKELIHOODS,
     BOUNDED_METRICS,
     CLUSTERING_METRICS,
+    IMAGE_SUMMARY_BOUNDED_METRICS,
+    IMAGE_SUMMARY_POSITIVE_METRICS,
+    IMAGE_SUMMARY_REAL_METRICS,
     POSITIVE_LIKELIHOODS,
     POSITIVE_METRICS,
     PreparedMetricData,
+    REAL_LIKELIHOODS,
     attach_response_scale_posterior,
     biology_posterior_var_names,
     diagnostic_var_names,
     fit_stem,
+    prepare_image_summary_metric_data,
     prepare_metric_data,
     trace_path_for_fit,
 )
@@ -45,6 +51,7 @@ from stats_utils import plot_super_beeswarm, plot_super_violin
 
 BAYES_SCRIPT_PATH = Path("/workspaces/mito-counter/hierarchical_bayes_metrics.py")
 QUANTILE_LEVELS = (0.10, 0.50, 0.90)
+IMAGE_SUMMARY_PPC_DENSITY_BINS = 24
 GRID_ALPHA = 0.22
 GRID_LINESTYLE = "--"
 XTICK_ROTATION = 25
@@ -70,6 +77,18 @@ METRIC_UNITS = {
     "3NND": "nm",
     "5NND": "nm",
     "Voronoi_Cell_Area": "nm^2",
+    "Density": "count/image",
+    "Voronoi_Cell_Area_center_cv": "",
+    "Ripley_L_integral": "nm^2",
+    "Pair_Correlation_integral": "",
+    "Corrected_area_sum": "nm^2",
+    "Minimum_Feret_Diameter_sum": "nm",
+    "Minimum_Feret_Diameter_mean": "nm",
+    "Elongation_mean": "",
+    "Circularity_mean": "",
+    "Solidity_mean": "",
+    "3NND_center_mean": "nm",
+    "Voronoi_Cell_Area_center_mean": "nm^2",
 }
 
 
@@ -333,6 +352,7 @@ def prepare_data_for_row(
     row: pd.Series,
     measurements_df: pd.DataFrame,
     fit_config: BayesFitConfig,
+    model_level: str = "instance",
 ) -> PreparedMetricData:
     """Rebuild prepared arrays for one summary row using its stored likelihood choice.
 
@@ -340,6 +360,7 @@ def prepare_data_for_row(
         row (pd.Series): Summary row describing one muscle-metric fit.
         measurements_df (pd.DataFrame): Full cleaned measurements table.
         fit_config (BayesFitConfig): Configured fit entry for the same muscle-metric pair.
+        model_level (str): Analysis level, either ``instance`` or ``image_summary``.
 
     Returns:
         PreparedMetricData: Prepared arrays matching the stored fit configuration.
@@ -348,6 +369,16 @@ def prepare_data_for_row(
     likelihood_name = resolved_likelihood_name(row=row, fit_config=fit_config)
     positive_likelihood = likelihood_name if str(row["family"]) == "positive" else POSITIVE_LIKELIHOODS[0]
     bounded_likelihood = likelihood_name if str(row["family"]) == "bounded" else BOUNDED_LIKELIHOODS[1]
+    real_likelihood = likelihood_name if str(row["family"]) == "real" else REAL_LIKELIHOODS[0]
+    if model_level == "image_summary":
+        return prepare_image_summary_metric_data(
+            df=measurements_df,
+            muscle=str(row["muscle"]),
+            metric=str(row["metric"]),
+            positive_likelihood=positive_likelihood,
+            bounded_likelihood=bounded_likelihood,
+            real_likelihood=real_likelihood,
+        )
     return prepare_metric_data(
         df=measurements_df,
         muscle=str(row["muscle"]),
@@ -371,7 +402,10 @@ def ensure_augmented_idata(
         az.InferenceData: Inference data guaranteed to include response-scale variables.
     """
 
-    required_variables = biology_posterior_var_names(family=prepared.family)
+    required_variables = biology_posterior_var_names(
+        family=prepared.family,
+        model_level=prepared.model_level,
+    )
     if all(variable in idata.posterior.data_vars for variable in required_variables):
         return idata
     return attach_response_scale_posterior(data=prepared, idata=idata)
@@ -408,12 +442,16 @@ def ppc_arrays_on_response_scale(
     observed = np.asarray(prepared.observed_y, dtype=float)
     predictive = np.asarray(idata.posterior_predictive["observed_metric"], dtype=float)
     predictive_samples = predictive.reshape(predictive.shape[0] * predictive.shape[1], predictive.shape[2])
-    if prepared.family == "positive":
+    if prepared.family in {"positive", "real"}:
         predictive_samples = prepared.positive_offset + predictive_samples * prepared.positive_scale
     return observed, predictive_samples
 
 
-def histogram_bin_edges(observed: np.ndarray, predictive_samples: np.ndarray) -> np.ndarray:
+def histogram_bin_edges(
+    observed: np.ndarray,
+    predictive_samples: np.ndarray,
+    fixed_bin_count: int | None = None,
+) -> np.ndarray:
     """Compute stable histogram edges shared by observed and predictive PPC arrays.
 
     Bin width and axis span are driven by a central band of the pooled data (default
@@ -423,6 +461,7 @@ def histogram_bin_edges(observed: np.ndarray, predictive_samples: np.ndarray) ->
     Args:
         observed (np.ndarray): Observed response-scale values.
         predictive_samples (np.ndarray): Predictive draws on the response scale.
+        fixed_bin_count (int | None): Optional fixed number of histogram bins.
 
     Returns:
         np.ndarray: Monotonic bin edges suitable for density overlays.
@@ -432,7 +471,8 @@ def histogram_bin_edges(observed: np.ndarray, predictive_samples: np.ndarray) ->
     combined = np.concatenate([observed.reshape(-1), predictive_subset])
     finite = combined[np.isfinite(combined)]
     if finite.size == 0:
-        return np.linspace(0.0, 1.0, 39)
+        bin_count = fixed_bin_count if fixed_bin_count is not None else 38
+        return np.linspace(0.0, 1.0, bin_count + 1)
 
     finite_for_edges = finite
     if finite.size >= 10:
@@ -449,7 +489,10 @@ def histogram_bin_edges(observed: np.ndarray, predictive_samples: np.ndarray) ->
     upper = float(np.max(finite_for_edges))
     if np.isclose(lower, upper):
         padding = max(abs(lower) * 0.05, 0.05)
-        return np.linspace(lower - padding, upper + padding, 39)
+        bin_count = fixed_bin_count if fixed_bin_count is not None else 38
+        return np.linspace(lower - padding, upper + padding, bin_count + 1)
+    if fixed_bin_count is not None:
+        return np.linspace(lower, upper, fixed_bin_count + 1)
     edges_fd = np.histogram_bin_edges(finite_for_edges, bins="fd")
     n_fd_bins = max(1, edges_fd.size - 1)
     edges = np.histogram_bin_edges(finite_for_edges, bins=2 * n_fd_bins)
@@ -458,6 +501,21 @@ def histogram_bin_edges(observed: np.ndarray, predictive_samples: np.ndarray) ->
     if edges.size > 120:
         edges = np.linspace(lower, upper, 120)
     return np.asarray(edges, dtype=float)
+
+
+def ppc_density_bin_count(prepared: PreparedMetricData) -> int | None:
+    """Return the fixed PPC density bin count for analyses that need one.
+
+    Args:
+        prepared (PreparedMetricData): Prepared metric-specific arrays matching the fit.
+
+    Returns:
+        int | None: Fixed bin count for image-summary PPC density plots, otherwise ``None``.
+    """
+
+    if prepared.model_level == "image_summary":
+        return IMAGE_SUMMARY_PPC_DENSITY_BINS
+    return None
 
 
 def animal_display_label(animal_label: str) -> str:
@@ -569,7 +627,8 @@ def fit_title(row: pd.Series) -> str:
         str: Human-readable title prefix for the current fit.
     """
 
-    scope = " center instances" if str(row["metric"]) in CLUSTERING_METRICS else ""
+    model_level = str(row.get("model_level", "instance"))
+    scope = " center instances" if model_level == "instance" and str(row["metric"]) in CLUSTERING_METRICS else ""
     return f"{row['metric']} - {row['muscle']}{scope}"
 
 
@@ -800,6 +859,7 @@ def plot_trace_figure(
         requested=diagnostic_var_names(
             str(row["family"]),
             str(row.get("likelihood_name", "")),
+            str(row.get("model_level", "instance")),
         ),
     )
     if not var_names:
@@ -851,6 +911,7 @@ def plot_rank_figure(
         requested=diagnostic_var_names(
             str(row["family"]),
             str(row.get("likelihood_name", "")),
+            str(row.get("model_level", "instance")),
         ),
     )
     if not var_names:
@@ -897,6 +958,7 @@ def plot_forest_figure(
         requested=diagnostic_var_names(
             str(row["family"]),
             str(row.get("likelihood_name", "")),
+            str(row.get("model_level", "instance")),
         ),
     )
     parameter_summaries = summarize_forest_parameters(idata=idata, var_names=var_names, hdi_prob=0.95)
@@ -1074,6 +1136,11 @@ def plot_ppc_density(
     """
 
     observed, predictive_samples = ppc_arrays_on_response_scale(idata=idata, prepared=prepared)
+    edges = histogram_bin_edges(
+        observed=observed,
+        predictive_samples=predictive_samples,
+        fixed_bin_count=ppc_density_bin_count(prepared=prepared),
+    )
     fig, ax = plt.subplots(figsize=(10, 6))
     plot_density_overlay(
         ax=ax,
@@ -1081,6 +1148,7 @@ def plot_ppc_density(
         predictive_samples=predictive_samples,
         title="All observations",
         rng=np.random.default_rng(20260415),
+        edges=edges,
     )
     ax.set_xlabel(metric_axis_label(str(row["metric"])))
     ax.set_ylabel("Density")
@@ -1128,7 +1196,11 @@ def plot_ppc_density_by_condition(
     observed, predictive_samples = ppc_arrays_on_response_scale(idata=idata, prepared=prepared)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True, sharex=True)
     rng = np.random.default_rng(20260416)
-    shared_edges = histogram_bin_edges(observed=observed, predictive_samples=predictive_samples)
+    shared_edges = histogram_bin_edges(
+        observed=observed,
+        predictive_samples=predictive_samples,
+        fixed_bin_count=ppc_density_bin_count(prepared=prepared),
+    )
     genotype_labels = ((0, prepared.wt_label), (1, prepared.ko_label))
     for ax, (genotype_value, label) in zip(np.atleast_1d(axes), genotype_labels):
         mask = prepared.genotype_idx_obs == genotype_value
@@ -1328,7 +1400,7 @@ def posterior_plot_specs(row: pd.Series) -> list[tuple[str, str, str, str]]:
         list[tuple[str, str, str, str]]: Posterior var name, summary column, filename stem, and label.
     """
 
-    return [
+    specs = [
         ("delta_mean_response", "delta_mean_summary", "delta_mean", "Genotype delta in mean"),
         (
             "delta_image_variance_response",
@@ -1336,13 +1408,17 @@ def posterior_plot_specs(row: pd.Series) -> list[tuple[str, str, str, str]]:
             "delta_image_variance",
             "Genotype delta in aggregated image variance",
         ),
-        (
-            "delta_mito_variance_response",
-            "delta_mito_variance_summary",
-            "delta_mito_variance",
-            "Genotype delta in aggregated mito variance",
-        ),
     ]
+    if str(row.get("model_level", "instance")) != "image_summary":
+        specs.append(
+            (
+                "delta_mito_variance_response",
+                "delta_mito_variance_summary",
+                "delta_mito_variance",
+                "Genotype delta in aggregated mito variance",
+            )
+        )
+    return specs
 
 
 def plot_biology_posteriors(
@@ -1363,7 +1439,12 @@ def plot_biology_posteriors(
         None
     """
 
-    available = set(biology_posterior_var_names(family=str(row["family"])))
+    available = set(
+        biology_posterior_var_names(
+            family=str(row["family"]),
+            model_level=str(row.get("model_level", "instance")),
+        )
+    )
     for variable_name, summary_column, filename_stem, quantity_label in posterior_plot_specs(row):
         if variable_name not in available or variable_name not in idata.posterior.data_vars:
             continue
@@ -1499,25 +1580,28 @@ def generate_fit_visualizations(
     )
 
 
-def main() -> None:
-    """Run the full Bayesian visualization workflow.
+def run_visualization_analysis(
+    config_path: Path,
+    config: BayesAnalysisConfig,
+    model_level: str,
+) -> None:
+    """Generate figures for one configured Bayesian analysis.
 
     Args:
-        None
+        config_path (Path): YAML configuration path shared with the metrics workflow.
+        config (BayesAnalysisConfig): Normalized analysis configuration to visualize.
+        model_level (str): Analysis level, either ``instance`` or ``image_summary``.
 
     Returns:
         None
     """
 
-    args = parse_args()
-    config = load_hierarchical_bayes_config(
-        path=args.config,
-        positive_metrics=tuple(POSITIVE_METRICS),
-        bounded_metrics=tuple(BOUNDED_METRICS),
-    )
+    if not config.enabled:
+        print(f"Analysis {config.analysis_id} is disabled in {config_path}; nothing to do.")
+        return
     fit_configs = repeated_fit_configs(config)
     if not fit_configs:
-        print(f"No fits have repeat=true in {config.config_path}; nothing to do.")
+        print(f"No {config.analysis_id} fits have repeat=true in {config_path}; nothing to do.")
         return
     measurements_df = pd.read_csv(config.paths.input_csv)
     validate_config_muscles(
@@ -1528,7 +1612,7 @@ def main() -> None:
         summary_path=config.paths.summary_csv,
         trace_dir=config.paths.trace_dir,
         refresh_mode=config.runtime.visualization_refresh_mode,
-        config_path=args.config,
+        config_path=config_path,
         fit_configs=fit_configs,
     )
 
@@ -1547,6 +1631,7 @@ def main() -> None:
             row=row,
             measurements_df=measurements_df,
             fit_config=fit_config,
+            model_level=model_level,
         )
         idata = ensure_augmented_idata(prepared=prepared, idata=idata)
         generate_fit_visualizations(
@@ -1555,6 +1640,34 @@ def main() -> None:
             prepared=prepared,
             measurements_df=measurements_df,
             figure_root=config.paths.figure_root,
+        )
+
+
+def main() -> None:
+    """Run the full Bayesian visualization workflow.
+
+    Args:
+        None
+
+    Returns:
+        None
+    """
+
+    args = parse_args()
+    config = load_hierarchical_bayes_config(
+        path=args.config,
+        positive_metrics=tuple(POSITIVE_METRICS),
+        bounded_metrics=tuple(BOUNDED_METRICS),
+        image_summary_positive_metrics=tuple(IMAGE_SUMMARY_POSITIVE_METRICS),
+        image_summary_bounded_metrics=tuple(IMAGE_SUMMARY_BOUNDED_METRICS),
+        image_summary_real_metrics=tuple(IMAGE_SUMMARY_REAL_METRICS),
+    )
+    for analysis_id, analysis in config.analyses_by_id.items():
+        model_level = "image_summary" if analysis_id == "image_summary" else "instance"
+        run_visualization_analysis(
+            config_path=args.config,
+            config=analysis,
+            model_level=model_level,
         )
 
 

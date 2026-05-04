@@ -23,6 +23,7 @@ from scipy.special import expit
 from scipy.stats import gaussian_kde, norm, skewnorm, wasserstein_distance
 
 from hierarchical_bayes_config import (
+    BayesAnalysisConfig,
     BayesFitConfig,
     DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH,
     load_hierarchical_bayes_config,
@@ -40,6 +41,7 @@ DEFAULT_POSITIVE_LIKELIHOOD = "gamma"
 DEFAULT_BOUNDED_LIKELIHOOD = "auto"
 POSITIVE_LIKELIHOODS = ("gamma", "lognormal")
 BOUNDED_LIKELIHOODS = ("auto", "beta", "zero_one_inflated_beta", "logitnormal", "logit_skew_normal")
+REAL_LIKELIHOODS = ("normal",)
 
 POSITIVE_METRICS = (
     "Area",
@@ -56,6 +58,24 @@ POSITIVE_METRICS = (
 BOUNDED_METRICS = (
     "Circularity",
     "Solidity",
+)
+IMAGE_SUMMARY_POSITIVE_METRICS = (
+    "Density",
+    "Voronoi_Cell_Area_center_cv",
+    "Corrected_area_sum",
+    "Minimum_Feret_Diameter_sum",
+    "Minimum_Feret_Diameter_mean",
+    "Elongation_mean",
+    "3NND_center_mean",
+    "Voronoi_Cell_Area_center_mean",
+)
+IMAGE_SUMMARY_BOUNDED_METRICS = (
+    "Circularity_mean",
+    "Solidity_mean",
+)
+IMAGE_SUMMARY_REAL_METRICS = (
+    "Ripley_L_integral",
+    "Pair_Correlation_integral",
 )
 CLUSTERING_METRICS = frozenset({"NND", "3NND", "5NND", "Voronoi_Cell_Area"})
 CENTER_IMAGE_REGION = "center"
@@ -105,6 +125,8 @@ class PreparedMetricData:
     n_animals_ko: int
     n_images_wt: int
     n_images_ko: int
+    analysis_id: str = "instance"
+    model_level: str = "instance"
 
 
 @dataclass
@@ -148,6 +170,46 @@ def fit_stem(muscle: str, metric: str) -> str:
     return f"{slugify_value(muscle)}__{slugify_value(metric)}"
 
 
+def metric_family_for_metric(
+    metric: str,
+    positive_metrics: tuple[str, ...],
+    bounded_metrics: tuple[str, ...],
+    real_metrics: tuple[str, ...] = (),
+) -> str:
+    """Return the model family assigned to a metric name.
+
+    Args:
+        metric (str): Metric column name to classify.
+        positive_metrics (tuple[str, ...]): Metric names modeled with positive likelihoods.
+        bounded_metrics (tuple[str, ...]): Metric names modeled with bounded likelihoods.
+        real_metrics (tuple[str, ...]): Metric names modeled with real-valued likelihoods.
+
+    Returns:
+        str: Family label, one of ``positive``, ``bounded``, or ``real``.
+    """
+
+    if metric in positive_metrics:
+        return "positive"
+    if metric in bounded_metrics:
+        return "bounded"
+    if metric in real_metrics:
+        return "real"
+    raise ValueError(f"Unsupported metric: {metric}")
+
+
+def positive_metric_offset(metric: str) -> float:
+    """Return the lower-bound offset used before positive-family scaling.
+
+    Args:
+        metric (str): Metric column name being modeled.
+
+    Returns:
+        float: Offset subtracted before fitting positive distributions.
+    """
+
+    return 1.0 if metric in {"Elongation", "Elongation_mean"} else 0.0
+
+
 def trace_path_for_fit(trace_dir: Path, muscle: str, metric: str) -> Path:
     """Return the NetCDF path used to store one fit's inference data.
 
@@ -163,17 +225,57 @@ def trace_path_for_fit(trace_dir: Path, muscle: str, metric: str) -> Path:
     return trace_dir / f"{fit_stem(muscle=muscle, metric=metric)}.nc"
 
 
-def diagnostic_var_names(family: str, likelihood_name: str = "") -> list[str]:
+def diagnostic_var_names(
+    family: str,
+    likelihood_name: str = "",
+    model_level: str = "instance",
+) -> list[str]:
     """Return the posterior variable names used for engine-check plots.
 
     Args:
         family (str): Metric family name, either ``positive`` or ``bounded``.
         likelihood_name (str): Concrete likelihood name used within the metric family.
+        model_level (str): Analysis level, either ``instance`` or ``image_summary``.
 
     Returns:
         list[str]: Variable names suitable for trace, rank, and forest plots.
     """
 
+    if model_level == "image_summary":
+        if family == "positive":
+            return [
+                "genotype_mean",
+                "animal_variance",
+                "image_variance",
+                "delta_mean",
+                "delta_image_variance",
+            ]
+        if family == "real":
+            return [
+                "genotype_mean",
+                "animal_sigma",
+                "image_sigma",
+                "delta_mean",
+                "delta_image_variance",
+            ]
+        if likelihood_name in ("logitnormal", "logit_skew_normal"):
+            names = [
+                "genotype_mean",
+                "animal_logit_sigma",
+                "image_sigma",
+                "delta_mean",
+                "delta_image_variance",
+            ]
+            if likelihood_name == "logit_skew_normal":
+                names.append("skew_alpha")
+            return names
+        return [
+            "genotype_mean",
+            "kappa_animal",
+            "kappa_image",
+            "delta_mean",
+            "delta_image_variance",
+        ]
     if family == "positive":
         return [
             "genotype_mean",
@@ -220,16 +322,22 @@ def diagnostic_var_names(family: str, likelihood_name: str = "") -> list[str]:
     ]
 
 
-def biology_posterior_var_names(family: str) -> list[str]:
+def biology_posterior_var_names(family: str, model_level: str = "instance") -> list[str]:
     """Return response-scale effect variables used for biology-facing posterior plots.
 
     Args:
         family (str): Metric family name, either ``positive`` or ``bounded``.
+        model_level (str): Analysis level, either ``instance`` or ``image_summary``.
 
     Returns:
         list[str]: Response-scale posterior effect variable names.
     """
 
+    if model_level == "image_summary":
+        return [
+            "delta_mean_response",
+            "delta_image_variance_response",
+        ]
     if family == "positive":
         return [
             "delta_mean_response",
@@ -576,7 +684,11 @@ def prepare_metric_data(
         PreparedMetricData: Structured arrays and metadata for model construction.
     """
 
-    family = "positive" if metric in POSITIVE_METRICS else "bounded"
+    family = metric_family_for_metric(
+        metric=metric,
+        positive_metrics=POSITIVE_METRICS,
+        bounded_metrics=BOUNDED_METRICS,
+    )
     wt_label, ko_label = determine_condition_labels(
         [str(value) for value in df["Condition"].dropna().unique().tolist()]
     )
@@ -622,7 +734,7 @@ def prepare_metric_data(
     positive_scale = 1.0
     positive_offset = 0.0
     if family == "positive":
-        positive_offset = 1.0 if metric == "Elongation" else 0.0
+        positive_offset = positive_metric_offset(metric=metric)
         values = values - positive_offset
         if np.any(values <= 0.0):
             min_raw_value = float(np.min(raw_values))
@@ -697,6 +809,141 @@ def prepare_metric_data(
         n_animals_ko=int(np.sum(animal_table["genotype_idx"] == 1)),
         n_images_wt=int(np.sum(image_table["genotype_idx"] == 0)),
         n_images_ko=int(np.sum(image_table["genotype_idx"] == 1)),
+        analysis_id="instance",
+        model_level="instance",
+    )
+
+
+def prepare_image_summary_metric_data(
+    df: pd.DataFrame,
+    muscle: str,
+    metric: str,
+    positive_likelihood: str = DEFAULT_POSITIVE_LIKELIHOOD,
+    bounded_likelihood: str = DEFAULT_BOUNDED_LIKELIHOOD,
+    real_likelihood: str = REAL_LIKELIHOODS[0],
+) -> PreparedMetricData:
+    """Prepare one image-summary muscle/metric subset for a three-level hierarchy.
+
+    Args:
+        df (pd.DataFrame): Image-summary measurements table with one row per image.
+        muscle (str): Muscle name to analyze separately.
+        metric (str): Image-summary metric column to model.
+        positive_likelihood (str): Positive-family likelihood name to use when applicable.
+        bounded_likelihood (str): Bounded-family likelihood strategy to use when applicable.
+        real_likelihood (str): Real-valued likelihood name to use when applicable.
+
+    Returns:
+        PreparedMetricData: Structured arrays and metadata for image-level model construction.
+    """
+
+    family = metric_family_for_metric(
+        metric=metric,
+        positive_metrics=IMAGE_SUMMARY_POSITIVE_METRICS,
+        bounded_metrics=IMAGE_SUMMARY_BOUNDED_METRICS,
+        real_metrics=IMAGE_SUMMARY_REAL_METRICS,
+    )
+    wt_label, ko_label = determine_condition_labels(
+        [str(value) for value in df["Condition"].dropna().unique().tolist()]
+    )
+    required_columns = ["Condition", "Block", "image", metric]
+    df_metric = df.loc[df["Muscle"] == muscle, required_columns].copy()
+    df_metric = df_metric.rename(columns={metric: "value"})
+    df_metric["value"] = pd.to_numeric(df_metric["value"], errors="coerce")
+    if family == "positive":
+        df_metric = df_metric.loc[df_metric["value"] > 0.0].copy()
+    df_metric = df_metric.dropna(subset=["Condition", "Block", "image", "value"])
+    df_metric = df_metric.sort_values(["Condition", "Block", "image"]).reset_index(drop=True)
+    if df_metric.empty:
+        raise ValueError(f"No image-summary observations available for {muscle} / {metric}.")
+
+    raw_values = df_metric["value"].to_numpy(dtype=float)
+    values = raw_values.copy()
+    boundary_adjusted = False
+    if family == "positive" and positive_likelihood not in POSITIVE_LIKELIHOODS:
+        raise ValueError(f"Unsupported positive likelihood: {positive_likelihood}")
+    if family == "bounded":
+        likelihood_name = resolve_bounded_likelihood(values=raw_values, bounded_likelihood=bounded_likelihood)
+        if likelihood_name not in BOUNDED_LIKELIHOODS[1:]:
+            raise ValueError(f"Unsupported bounded likelihood: {likelihood_name}")
+        if likelihood_name in ("beta", "logitnormal", "logit_skew_normal"):
+            values, boundary_adjusted = squeeze_open_interval_values(values)
+    elif family == "real":
+        if real_likelihood not in REAL_LIKELIHOODS:
+            raise ValueError(f"Unsupported real-valued likelihood: {real_likelihood}")
+        likelihood_name = real_likelihood
+    else:
+        likelihood_name = positive_likelihood
+
+    positive_scale = 1.0
+    positive_offset = 0.0
+    if family == "positive":
+        positive_offset = positive_metric_offset(metric=metric)
+        values = values - positive_offset
+        if np.any(values <= 0.0):
+            min_raw_value = float(np.min(raw_values))
+            raise ValueError(
+                f"{metric} must be strictly greater than {positive_offset} for positive modeling; "
+                f"minimum observed value is {min_raw_value}."
+            )
+        positive_scale = max(float(np.median(values)), SMALL_VALUE)
+        values = values / positive_scale
+    elif family == "real":
+        positive_offset = float(np.median(values))
+        positive_scale = max(float(np.std(values, ddof=1)), SMALL_VALUE) if values.size > 1 else 1.0
+        values = (values - positive_offset) / positive_scale
+
+    df_metric["value"] = values
+    pooled_median = float(np.median(values))
+    pooled_std = float(np.std(values, ddof=1)) if len(values) > 1 else SMALL_VALUE
+    pooled_std = max(pooled_std, SMALL_VALUE)
+
+    genotype_map = {wt_label: 0, ko_label: 1}
+    df_metric["genotype_idx"] = df_metric["Condition"].map(genotype_map).astype(int)
+    df_metric["animal_key"] = df_metric["Condition"].astype(str) + "__" + df_metric["Block"].astype(str)
+
+    animal_table = (
+        df_metric[["animal_key", "Condition", "Block"]]
+        .drop_duplicates()
+        .sort_values(["Condition", "Block"])
+        .reset_index(drop=True)
+    )
+    animal_table["animal_idx"] = np.arange(len(animal_table), dtype=int)
+    animal_idx_map = animal_table.set_index("animal_key")["animal_idx"].to_dict()
+    animal_table["genotype_idx"] = animal_table["Condition"].map(genotype_map).astype(int)
+
+    df_metric["animal_idx"] = df_metric["animal_key"].map(animal_idx_map).astype(int)
+    df_metric["image_idx"] = np.arange(len(df_metric), dtype=int)
+
+    return PreparedMetricData(
+        muscle=muscle,
+        metric=metric,
+        family=family,
+        likelihood_name=likelihood_name,
+        wt_label=wt_label,
+        ko_label=ko_label,
+        y=df_metric["value"].to_numpy(dtype=float),
+        observed_y=raw_values,
+        genotype_idx_obs=df_metric["genotype_idx"].to_numpy(dtype=int),
+        image_idx_obs=df_metric["image_idx"].to_numpy(dtype=int),
+        animal_idx_obs=df_metric["animal_idx"].to_numpy(dtype=int),
+        animal_idx_image=df_metric["animal_idx"].to_numpy(dtype=int),
+        genotype_idx_animal=animal_table["genotype_idx"].to_numpy(dtype=int),
+        genotype_idx_image=df_metric["genotype_idx"].to_numpy(dtype=int),
+        animal_labels=animal_table["animal_key"].astype(str).tolist(),
+        image_labels=df_metric["image"].astype(str).tolist(),
+        boundary_adjusted=boundary_adjusted,
+        positive_scale=positive_scale,
+        positive_offset=positive_offset,
+        pooled_median=pooled_median,
+        pooled_std=pooled_std,
+        n_obs_wt=int(np.sum(df_metric["genotype_idx"] == 0)),
+        n_obs_ko=int(np.sum(df_metric["genotype_idx"] == 1)),
+        n_animals_wt=int(np.sum(animal_table["genotype_idx"] == 0)),
+        n_animals_ko=int(np.sum(animal_table["genotype_idx"] == 1)),
+        n_images_wt=int(np.sum(df_metric["genotype_idx"] == 0)),
+        n_images_ko=int(np.sum(df_metric["genotype_idx"] == 1)),
+        analysis_id="image_summary",
+        model_level="image_summary",
     )
 
 
@@ -932,6 +1179,95 @@ def bounded_response_scale_variance_components(
     if data.likelihood_name == "logit_skew_normal":
         return logit_skew_normal_response_scale_variance_components(data=data, posterior=posterior)
     return beta_response_scale_variance_components(data=data, posterior=posterior)
+
+
+def image_summary_response_scale_variance_components(
+    data: PreparedMetricData,
+    posterior: xr.Dataset,
+) -> dict[str, np.ndarray]:
+    """Compute response-scale variance components for image-summary models.
+
+    Args:
+        data (PreparedMetricData): Prepared image-summary arrays and labels.
+        posterior (xr.Dataset): Posterior dataset containing image-summary model draws.
+
+    Returns:
+        dict[str, np.ndarray]: Draw-aligned image and animal variance components.
+    """
+
+    wt_images = data.genotype_idx_image == 0
+    ko_images = data.genotype_idx_image == 1
+    wt_animals = data.genotype_idx_animal == 0
+    ko_animals = data.genotype_idx_animal == 1
+
+    if data.family == "positive":
+        variance_scale = data.positive_scale**2
+        image_variance = variance_scale * np.asarray(posterior["image_variance"], dtype=float)
+        animal_variance = variance_scale * np.asarray(posterior["animal_variance"], dtype=float)
+        return {
+            "wt_image_variance": image_variance[..., 0],
+            "ko_image_variance": image_variance[..., 1],
+            "delta_image_variance": image_variance[..., 1] - image_variance[..., 0],
+            "animal_variance_shared": animal_variance,
+        }
+
+    if data.family == "real":
+        variance_scale = data.positive_scale**2
+        image_sigma = np.asarray(posterior["image_sigma"], dtype=float)
+        animal_sigma = np.asarray(posterior["animal_sigma"], dtype=float)
+        wt_image_variance = variance_scale * np.square(image_sigma[..., 0])
+        ko_image_variance = variance_scale * np.square(image_sigma[..., 1])
+        return {
+            "wt_image_variance": wt_image_variance,
+            "ko_image_variance": ko_image_variance,
+            "delta_image_variance": ko_image_variance - wt_image_variance,
+            "animal_variance_shared": variance_scale * np.square(animal_sigma),
+        }
+
+    animal_mean = np.asarray(posterior["animal_mean"], dtype=float)
+    if data.likelihood_name in ("logitnormal", "logit_skew_normal"):
+        image_logit_mean = np.asarray(posterior["image_logit_mean"], dtype=float)
+        image_sigma = np.asarray(posterior["image_sigma"], dtype=float)
+        image_sigma_by_image = image_sigma[..., data.genotype_idx_image]
+        if data.likelihood_name == "logit_skew_normal":
+            _, image_variance_by_image = logit_skew_normal_response_moments(
+                logit_location=image_logit_mean,
+                sigma=image_sigma_by_image,
+                alpha=np.asarray(posterior["skew_alpha"], dtype=float),
+            )
+        else:
+            _, image_variance_by_image = logitnormal_response_moments(
+                logit_location=image_logit_mean,
+                sigma=image_sigma_by_image,
+            )
+        animal_var_wt = np.var(animal_mean[..., wt_animals], axis=-1)
+        animal_var_ko = np.var(animal_mean[..., ko_animals], axis=-1)
+        wt_image_variance = mean_over_selected_units(image_variance_by_image, wt_images)
+        ko_image_variance = mean_over_selected_units(image_variance_by_image, ko_images)
+        return {
+            "wt_image_variance": wt_image_variance,
+            "ko_image_variance": ko_image_variance,
+            "delta_image_variance": ko_image_variance - wt_image_variance,
+            "animal_variance_shared": 0.5 * (animal_var_wt + animal_var_ko),
+        }
+
+    kappa_image = np.asarray(posterior["kappa_image"], dtype=float)
+    genotype_mean = np.asarray(posterior["genotype_mean"], dtype=float)
+    image_variance = genotype_mean * (1.0 - genotype_mean) / (kappa_image + 1.0)
+    animal_var_wt = mean_over_selected_units(
+        animal_mean[..., wt_animals] * (1.0 - animal_mean[..., wt_animals]),
+        np.ones(int(np.sum(wt_animals)), dtype=bool),
+    ) / (np.asarray(posterior["kappa_animal"], dtype=float) + 1.0)
+    animal_var_ko = mean_over_selected_units(
+        animal_mean[..., ko_animals] * (1.0 - animal_mean[..., ko_animals]),
+        np.ones(int(np.sum(ko_animals)), dtype=bool),
+    ) / (np.asarray(posterior["kappa_animal"], dtype=float) + 1.0)
+    return {
+        "wt_image_variance": image_variance[..., 0],
+        "ko_image_variance": image_variance[..., 1],
+        "delta_image_variance": image_variance[..., 1] - image_variance[..., 0],
+        "animal_variance_shared": 0.5 * (animal_var_wt + animal_var_ko),
+    }
 
 
 def build_positive_model(data: PreparedMetricData) -> pm.Model:
@@ -1255,6 +1591,258 @@ def build_bounded_model(data: PreparedMetricData) -> pm.Model:
     return model
 
 
+def build_image_summary_positive_model(data: PreparedMetricData) -> pm.Model:
+    """Construct a three-level positive hierarchy for image-summary metrics.
+
+    Args:
+        data (PreparedMetricData): Prepared image-summary metric arrays and labels.
+
+    Returns:
+        pm.Model: PyMC model with image observations nested in animals and genotype.
+    """
+
+    coords = model_coords(data)
+    variance_scale = max(data.pooled_std**2, SMALL_VALUE)
+    prior_sigma = max(2.0 * data.pooled_std, SMALL_VALUE)
+
+    with pm.Model(coords=coords) as model:
+        image_idx_obs = pm.Data("image_idx_obs", data.image_idx_obs, dims="obs_id")
+        animal_idx_obs = pm.Data("animal_idx_obs", data.animal_idx_obs, dims="obs_id")
+        animal_idx_image = pm.Data("animal_idx_image", data.animal_idx_image, dims="image")
+        genotype_idx_animal = pm.Data("genotype_idx_animal", data.genotype_idx_animal, dims="animal")
+        genotype_idx_obs = pm.Data("genotype_idx_obs", data.genotype_idx_obs, dims="obs_id")
+
+        genotype_mean = pm.Gamma("genotype_mean", mu=data.pooled_median, sigma=prior_sigma, dims="genotype")
+        animal_variance = pm.HalfNormal("animal_variance", sigma=variance_scale)
+        log_image_variance_genotype = pm.Normal(
+            "log_image_variance_genotype",
+            mu=np.log(variance_scale),
+            sigma=1.5,
+            dims="genotype",
+        )
+        image_variance = pm.Deterministic(
+            "image_variance",
+            pt.exp(log_image_variance_genotype),
+            dims="genotype",
+        )
+        animal_sigma = pm.Deterministic("animal_sigma", pt.sqrt(animal_variance))
+        image_sigma = pm.Deterministic("image_sigma", pt.sqrt(image_variance), dims="genotype")
+        animal_mean = pm.Gamma(
+            "animal_mean",
+            mu=genotype_mean[genotype_idx_animal],
+            sigma=animal_sigma,
+            dims="animal",
+        )
+        image_mean = pm.Deterministic("image_mean", animal_mean[animal_idx_image], dims="image")
+
+        observed_mean = animal_mean[animal_idx_obs]
+        observed_variance = image_variance[genotype_idx_obs]
+        if data.likelihood_name == "lognormal":
+            log_sigma_squared = pt.log1p(
+                observed_variance / pt.clip(pt.square(observed_mean), SMALL_VALUE, np.inf)
+            )
+            log_sigma = pt.sqrt(pt.clip(log_sigma_squared, SMALL_VALUE, np.inf))
+            log_mu = pt.log(pt.clip(observed_mean, SMALL_VALUE, np.inf)) - 0.5 * log_sigma_squared
+            pm.LogNormal("observed_metric", mu=log_mu, sigma=log_sigma, observed=data.y, dims="obs_id")
+        else:
+            pm.Gamma(
+                "observed_metric",
+                mu=observed_mean,
+                sigma=image_sigma[genotype_idx_obs],
+                observed=data.y,
+                dims="obs_id",
+            )
+
+        pm.Deterministic("delta_mean", genotype_mean[1] - genotype_mean[0])
+        pm.Deterministic("delta_image_variance", image_variance[1] - image_variance[0])
+
+    return model
+
+
+def build_image_summary_bounded_model(data: PreparedMetricData) -> pm.Model:
+    """Construct a three-level bounded hierarchy for image-summary metrics.
+
+    Args:
+        data (PreparedMetricData): Prepared image-summary metric arrays and labels.
+
+    Returns:
+        pm.Model: PyMC model with bounded image observations nested in animals and genotype.
+    """
+
+    coords = model_coords(data)
+
+    with pm.Model(coords=coords) as model:
+        animal_idx_obs = pm.Data("animal_idx_obs", data.animal_idx_obs, dims="obs_id")
+        animal_idx_image = pm.Data("animal_idx_image", data.animal_idx_image, dims="image")
+        genotype_idx_animal = pm.Data("genotype_idx_animal", data.genotype_idx_animal, dims="animal")
+        genotype_idx_obs = pm.Data("genotype_idx_obs", data.genotype_idx_obs, dims="obs_id")
+
+        genotype_mean = pm.Beta("genotype_mean", alpha=2.0, beta=2.0, dims="genotype")
+        if data.likelihood_name in ("logitnormal", "logit_skew_normal"):
+            genotype_logit_mean = pm.Deterministic(
+                "genotype_logit_mean",
+                logit_tensor(genotype_mean),
+                dims="genotype",
+            )
+            animal_logit_sigma = pm.HalfNormal("animal_logit_sigma", sigma=0.75)
+            log_image_sigma_genotype = pm.Normal(
+                "log_image_sigma_genotype",
+                mu=np.log(0.12),
+                sigma=0.6,
+                dims="genotype",
+            )
+            image_sigma = pm.Deterministic(
+                "image_sigma",
+                pt.exp(log_image_sigma_genotype),
+                dims="genotype",
+            )
+            animal_logit_mean = pm.Normal(
+                "animal_logit_mean",
+                mu=genotype_logit_mean[genotype_idx_animal],
+                sigma=animal_logit_sigma,
+                dims="animal",
+            )
+            animal_mean = pm.Deterministic(
+                "animal_mean",
+                sigmoid_tensor(animal_logit_mean),
+                dims="animal",
+            )
+            image_logit_mean = pm.Deterministic(
+                "image_logit_mean",
+                animal_logit_mean[animal_idx_image],
+                dims="image",
+            )
+            image_mean = pm.Deterministic("image_mean", sigmoid_tensor(image_logit_mean), dims="image")
+            if data.likelihood_name == "logit_skew_normal":
+                skew_alpha = pm.Normal("skew_alpha", mu=0.0, sigma=2.0)
+                pm.CustomDist(
+                    "observed_metric",
+                    animal_logit_mean[animal_idx_obs],
+                    image_sigma[genotype_idx_obs],
+                    skew_alpha,
+                    logp=logit_skew_normal_logp,
+                    random=logit_skew_normal_random,
+                    observed=data.y,
+                    dims="obs_id",
+                )
+            else:
+                pm.LogitNormal(
+                    "observed_metric",
+                    mu=animal_logit_mean[animal_idx_obs],
+                    sigma=image_sigma[genotype_idx_obs],
+                    observed=data.y,
+                    dims="obs_id",
+                )
+            pm.Deterministic("delta_mean", genotype_mean[1] - genotype_mean[0])
+            pm.Deterministic("delta_image_variance", pt.square(image_sigma[1]) - pt.square(image_sigma[0]))
+            return model
+
+        log_kappa_animal = pm.Normal("log_kappa_animal", mu=np.log(20.0), sigma=1.5)
+        log_kappa_image_genotype = pm.Normal(
+            "log_kappa_image_genotype",
+            mu=np.log(20.0),
+            sigma=1.5,
+            dims="genotype",
+        )
+        kappa_animal = pm.Deterministic("kappa_animal", pt.exp(log_kappa_animal))
+        kappa_image = pm.Deterministic("kappa_image", pt.exp(log_kappa_image_genotype), dims="genotype")
+
+        animal_alpha = pt.clip(genotype_mean[genotype_idx_animal] * kappa_animal, SMALL_VALUE, np.inf)
+        animal_beta = pt.clip((1.0 - genotype_mean[genotype_idx_animal]) * kappa_animal, SMALL_VALUE, np.inf)
+        animal_mean = pm.Beta("animal_mean", alpha=animal_alpha, beta=animal_beta, dims="animal")
+        image_mean = pm.Deterministic("image_mean", animal_mean[animal_idx_image], dims="image")
+
+        image_parent_mean = animal_mean[animal_idx_obs]
+        image_kappa = kappa_image[genotype_idx_obs]
+        image_alpha = pt.clip(image_parent_mean * image_kappa, SMALL_VALUE, np.inf)
+        image_beta = pt.clip((1.0 - image_parent_mean) * image_kappa, SMALL_VALUE, np.inf)
+        if data.likelihood_name == "zero_one_inflated_beta":
+            boundary_mass = pm.Beta("boundary_mass", alpha=1.5, beta=8.5, dims="genotype")
+            one_given_boundary = pm.Beta("one_given_boundary", alpha=1.5, beta=1.5, dims="genotype")
+            zero_weight = boundary_mass[genotype_idx_obs] * (1.0 - one_given_boundary[genotype_idx_obs])
+            one_weight = boundary_mass[genotype_idx_obs] * one_given_boundary[genotype_idx_obs]
+            beta_weight = 1.0 - boundary_mass[genotype_idx_obs]
+            weights = pt.stack([zero_weight, one_weight, beta_weight], axis=1)
+            zero_component = pm.DiracDelta.dist(0.0, shape=data.y.shape[0])
+            one_component = pm.DiracDelta.dist(1.0, shape=data.y.shape[0])
+            beta_component = pm.Beta.dist(alpha=image_alpha, beta=image_beta, shape=data.y.shape[0])
+            pm.Mixture(
+                "observed_metric",
+                w=weights,
+                comp_dists=[zero_component, one_component, beta_component],
+                observed=data.y,
+                dims="obs_id",
+            )
+        else:
+            pm.Beta("observed_metric", alpha=image_alpha, beta=image_beta, observed=data.y, dims="obs_id")
+
+        pm.Deterministic("delta_mean", genotype_mean[1] - genotype_mean[0])
+        image_variance = genotype_mean * (1.0 - genotype_mean) / (kappa_image + 1.0)
+        pm.Deterministic("delta_image_variance", image_variance[1] - image_variance[0])
+
+    return model
+
+
+def build_image_summary_real_model(data: PreparedMetricData) -> pm.Model:
+    """Construct a three-level Normal hierarchy for signed image-summary metrics.
+
+    Args:
+        data (PreparedMetricData): Prepared image-summary metric arrays and labels.
+
+    Returns:
+        pm.Model: PyMC model for real-valued image observations nested in animals and genotype.
+    """
+
+    coords = model_coords(data)
+    prior_sigma = max(2.0 * data.pooled_std, SMALL_VALUE)
+
+    with pm.Model(coords=coords) as model:
+        animal_idx_obs = pm.Data("animal_idx_obs", data.animal_idx_obs, dims="obs_id")
+        animal_idx_image = pm.Data("animal_idx_image", data.animal_idx_image, dims="image")
+        genotype_idx_animal = pm.Data("genotype_idx_animal", data.genotype_idx_animal, dims="animal")
+        genotype_idx_obs = pm.Data("genotype_idx_obs", data.genotype_idx_obs, dims="obs_id")
+
+        genotype_mean = pm.Normal("genotype_mean", mu=data.pooled_median, sigma=prior_sigma, dims="genotype")
+        animal_sigma = pm.HalfNormal("animal_sigma", sigma=prior_sigma)
+        image_sigma = pm.HalfNormal("image_sigma", sigma=prior_sigma, dims="genotype")
+        animal_mean = pm.Normal(
+            "animal_mean",
+            mu=genotype_mean[genotype_idx_animal],
+            sigma=animal_sigma,
+            dims="animal",
+        )
+        image_mean = pm.Deterministic("image_mean", animal_mean[animal_idx_image], dims="image")
+        pm.Normal(
+            "observed_metric",
+            mu=animal_mean[animal_idx_obs],
+            sigma=image_sigma[genotype_idx_obs],
+            observed=data.y,
+            dims="obs_id",
+        )
+
+        pm.Deterministic("delta_mean", genotype_mean[1] - genotype_mean[0])
+        pm.Deterministic("delta_image_variance", pt.square(image_sigma[1]) - pt.square(image_sigma[0]))
+
+    return model
+
+
+def build_image_summary_model(data: PreparedMetricData) -> pm.Model:
+    """Dispatch to the appropriate image-summary model builder.
+
+    Args:
+        data (PreparedMetricData): Prepared image-summary arrays and metadata.
+
+    Returns:
+        pm.Model: PyMC model matching the configured image-summary family.
+    """
+
+    if data.family == "positive":
+        return build_image_summary_positive_model(data)
+    if data.family == "bounded":
+        return build_image_summary_bounded_model(data)
+    return build_image_summary_real_model(data)
+
+
 def build_model(data: PreparedMetricData) -> pm.Model:
     """Dispatch to the appropriate model builder for one prepared metric dataset.
 
@@ -1265,6 +1853,8 @@ def build_model(data: PreparedMetricData) -> pm.Model:
         pm.Model: PyMC model matching the family and likelihood configured for `data`.
     """
 
+    if data.model_level == "image_summary":
+        return build_image_summary_model(data)
     if data.family == "positive":
         return build_positive_model(data)
     return build_bounded_model(data)
@@ -1357,7 +1947,40 @@ def attach_response_scale_posterior(
     draw_coords = posterior.coords["draw"]
 
     response_variables: dict[str, xr.DataArray] = {}
-    if data.family == "positive":
+    if data.model_level == "image_summary":
+        mean_scale = data.positive_scale if data.family in {"positive", "real"} else 1.0
+        mean_offset = data.positive_offset if data.family == "real" else data.positive_offset
+        variance_draws = image_summary_response_scale_variance_components(data=data, posterior=posterior)
+        if data.family in {"positive", "real"}:
+            genotype_mean_response = mean_offset + posterior["genotype_mean"] * mean_scale
+            delta_mean_response = posterior["delta_mean"] * mean_scale
+        else:
+            genotype_mean_response = xr.DataArray(
+                np.asarray(posterior["genotype_mean"]),
+                dims=("chain", "draw", "genotype"),
+                coords={"chain": chain_coords, "draw": draw_coords, "genotype": genotype_coords},
+            )
+            delta_mean_response = posterior["delta_mean"]
+        response_variables = {
+            "genotype_mean_response": genotype_mean_response,
+            "delta_mean_response": delta_mean_response,
+            "animal_variance_shared_response": xr.DataArray(
+                variance_draws["animal_variance_shared"],
+                dims=("chain", "draw"),
+                coords={"chain": chain_coords, "draw": draw_coords},
+            ),
+            "image_variance_response": xr.DataArray(
+                np.stack([variance_draws["wt_image_variance"], variance_draws["ko_image_variance"]], axis=-1),
+                dims=("chain", "draw", "genotype"),
+                coords={"chain": chain_coords, "draw": draw_coords, "genotype": genotype_coords},
+            ),
+            "delta_image_variance_response": xr.DataArray(
+                variance_draws["delta_image_variance"],
+                dims=("chain", "draw"),
+                coords={"chain": chain_coords, "draw": draw_coords},
+            ),
+        }
+    elif data.family == "positive":
         mean_scale = data.positive_scale
         mean_offset = data.positive_offset
         variance_draws = positive_response_scale_variance_components(data=data, posterior=posterior)
@@ -1435,6 +2058,8 @@ def attach_response_scale_posterior(
     idata.attrs["metric"] = data.metric
     idata.attrs["family"] = data.family
     idata.attrs["likelihood_name"] = data.likelihood_name
+    idata.attrs["analysis_id"] = data.analysis_id
+    idata.attrs["model_level"] = data.model_level
     idata.attrs["fit_stem"] = fit_stem(muscle=data.muscle, metric=data.metric)
     return idata
 
@@ -1517,6 +2142,25 @@ def summarize_scalar(draws: np.ndarray, label: str) -> dict[str, float | str]:
         f"{label}_summary": (
             f"delta={estimate:.4g}, 95% HDI [{hdi_low:.4g},{hdi_high:.4g}], pd={pd_value:.1f}%"
         ),
+    }
+
+
+def unavailable_scalar_summary(label: str) -> dict[str, float | str]:
+    """Create empty summary columns for a quantity unavailable in a model level.
+
+    Args:
+        label (str): Column prefix used in the output dataframe.
+
+    Returns:
+        dict[str, float | str]: Placeholder estimate, HDI, probability, and summary columns.
+    """
+
+    return {
+        label: float("nan"),
+        f"{label}_hdi_low": float("nan"),
+        f"{label}_hdi_high": float("nan"),
+        f"{label}_pd": float("nan"),
+        f"{label}_summary": "",
     }
 
 
@@ -1629,7 +2273,7 @@ def delta_mean_response_draws_from_posterior(
     """
 
     delta_mean = flatten_draws(idata.posterior["delta_mean"]).reshape(-1)
-    if data.family == "positive":
+    if data.family in {"positive", "real"}:
         return delta_mean * data.positive_scale
     return delta_mean
 
@@ -1659,7 +2303,7 @@ def sample_prior_delta_mean_response_draws(
             return_inferencedata=False,
         )
     delta_mean = np.asarray(prior_draws["delta_mean"], dtype=float).reshape(-1)
-    if data.family == "positive":
+    if data.family in {"positive", "real"}:
         return delta_mean * data.positive_scale
     return delta_mean
 
@@ -1744,6 +2388,34 @@ def beta_variance_summaries(data: PreparedMetricData, idata: az.InferenceData) -
         "wt_mito_variance": flatten_draws(variance_draws["wt_mito_variance"]),
         "ko_mito_variance": flatten_draws(variance_draws["ko_mito_variance"]),
         "delta_mito_variance": flatten_draws(variance_draws["delta_mito_variance"]),
+        "animal_variance_shared": flatten_draws(variance_draws["animal_variance_shared"]),
+    }
+
+
+def image_summary_variance_summaries(
+    data: PreparedMetricData,
+    idata: az.InferenceData,
+) -> dict[str, np.ndarray]:
+    """Extract image-summary variance-component draws from an inference dataset.
+
+    Args:
+        data (PreparedMetricData): Prepared image-summary metric arrays and labels.
+        idata (az.InferenceData): Posterior samples for an image-summary model.
+
+    Returns:
+        dict[str, np.ndarray]: Flattened image variance draws and unavailable mito placeholders.
+    """
+
+    variance_draws = image_summary_response_scale_variance_components(data=data, posterior=idata.posterior)
+    sample_count = np.asarray(variance_draws["delta_image_variance"]).reshape(-1).shape[0]
+    unavailable = np.full(sample_count, np.nan, dtype=float)
+    return {
+        "wt_image_variance": flatten_draws(variance_draws["wt_image_variance"]),
+        "ko_image_variance": flatten_draws(variance_draws["ko_image_variance"]),
+        "delta_image_variance": flatten_draws(variance_draws["delta_image_variance"]),
+        "wt_mito_variance": unavailable,
+        "ko_mito_variance": unavailable,
+        "delta_mito_variance": unavailable,
         "animal_variance_shared": flatten_draws(variance_draws["animal_variance_shared"]),
     }
 
@@ -1894,6 +2566,67 @@ def simulate_predictive_subset(
     obs_image_idx = data.image_idx_obs[obs_indices]
     obs_genotype_idx = data.genotype_idx_obs[obs_indices]
     parent_mean = image_mean[:, obs_image_idx]
+
+    if data.model_level == "image_summary":
+        if data.family == "positive":
+            image_variance = flatten_draws(idata.posterior["image_variance"])[draw_indices]
+            obs_variance = image_variance[:, obs_genotype_idx]
+            if data.likelihood_name == "lognormal":
+                log_mu, log_sigma = lognormal_mu_sigma_from_mean_variance(
+                    mean=parent_mean,
+                    variance=obs_variance,
+                )
+                return data.positive_offset + data.positive_scale * rng.lognormal(mean=log_mu, sigma=log_sigma)
+            gamma_shape = np.square(parent_mean) / np.clip(obs_variance, SMALL_VALUE, None)
+            gamma_scale = np.clip(obs_variance, SMALL_VALUE, None) / np.clip(parent_mean, SMALL_VALUE, None)
+            return data.positive_offset + data.positive_scale * rng.gamma(shape=gamma_shape, scale=gamma_scale)
+
+        if data.family == "real":
+            image_sigma = flatten_draws(idata.posterior["image_sigma"])[draw_indices]
+            obs_sigma = image_sigma[:, obs_genotype_idx]
+            standardized = rng.normal(loc=parent_mean, scale=obs_sigma)
+            return data.positive_offset + data.positive_scale * standardized
+
+        if data.likelihood_name == "logitnormal":
+            image_logit_mean = flatten_draws(idata.posterior["image_logit_mean"])[draw_indices]
+            image_sigma = flatten_draws(idata.posterior["image_sigma"])[draw_indices]
+            obs_logit_mean = image_logit_mean[:, obs_image_idx]
+            obs_sigma = image_sigma[:, obs_genotype_idx]
+            return expit(rng.normal(loc=obs_logit_mean, scale=obs_sigma))
+        if data.likelihood_name == "logit_skew_normal":
+            image_logit_mean = flatten_draws(idata.posterior["image_logit_mean"])[draw_indices]
+            image_sigma = flatten_draws(idata.posterior["image_sigma"])[draw_indices]
+            skew_alpha = flatten_draws(idata.posterior["skew_alpha"])[draw_indices]
+            obs_logit_mean = image_logit_mean[:, obs_image_idx]
+            obs_sigma = image_sigma[:, obs_genotype_idx]
+            return expit(
+                skewnorm.rvs(
+                    a=skew_alpha[:, None],
+                    loc=obs_logit_mean,
+                    scale=obs_sigma,
+                    random_state=rng,
+                )
+            )
+
+        kappa_image = flatten_draws(idata.posterior["kappa_image"])[draw_indices]
+        obs_kappa = kappa_image[:, obs_genotype_idx]
+        alpha = np.clip(parent_mean * obs_kappa, SMALL_VALUE, None)
+        beta = np.clip((1.0 - parent_mean) * obs_kappa, SMALL_VALUE, None)
+        beta_predictive = rng.beta(alpha, beta)
+        if data.likelihood_name != "zero_one_inflated_beta":
+            return beta_predictive
+        boundary_mass = flatten_draws(idata.posterior["boundary_mass"])[draw_indices][:, obs_genotype_idx]
+        one_given_boundary = flatten_draws(idata.posterior["one_given_boundary"])[draw_indices][
+            :, obs_genotype_idx
+        ]
+        uniforms = rng.random(size=beta_predictive.shape)
+        zero_cutoff = boundary_mass * (1.0 - one_given_boundary)
+        boundary_cutoff = boundary_mass
+        return np.where(
+            uniforms < zero_cutoff,
+            0.0,
+            np.where(uniforms < boundary_cutoff, 1.0, beta_predictive),
+        )
 
     if data.family == "positive":
         mito_variance_by_image = flatten_draws(idata.posterior["mito_variance_by_image"])[draw_indices]
@@ -2119,17 +2852,22 @@ def summarize_model(
     wt_mean = genotype_mean[:, 0]
     ko_mean = genotype_mean[:, 1]
 
-    if data.family == "positive":
+    if data.model_level == "image_summary":
+        variance_draws = image_summary_variance_summaries(data, idata)
+        diagnostic_names = diagnostic_var_names(data.family, data.likelihood_name, data.model_level)
+    elif data.family == "positive":
         variance_draws = gamma_variance_summaries(data, idata)
-        diagnostic_names = diagnostic_var_names(data.family, data.likelihood_name)
+        diagnostic_names = diagnostic_var_names(data.family, data.likelihood_name, data.model_level)
     else:
         variance_draws = beta_variance_summaries(data, idata)
-        diagnostic_names = diagnostic_var_names(data.family, data.likelihood_name)
+        diagnostic_names = diagnostic_var_names(data.family, data.likelihood_name, data.model_level)
 
-    mean_scale = data.positive_scale if data.family == "positive" else 1.0
-    mean_offset = data.positive_offset if data.family == "positive" else 0.0
+    mean_scale = data.positive_scale if data.family in {"positive", "real"} else 1.0
+    mean_offset = data.positive_offset if data.family == "real" else data.positive_offset if data.family == "positive" else 0.0
 
     row: dict[str, Any] = {
+        "analysis_id": data.analysis_id,
+        "model_level": data.model_level,
         "muscle": data.muscle,
         "metric": data.metric,
         "family": data.family,
@@ -2159,11 +2897,18 @@ def summarize_model(
         )
     )
     row.update(summarize_scalar(variance_draws["delta_image_variance"], "delta_image_variance"))
-    row.update(summarize_scalar(variance_draws["delta_mito_variance"], "delta_mito_variance"))
+    if data.model_level == "image_summary":
+        row.update(unavailable_scalar_summary("delta_mito_variance"))
+    else:
+        row.update(summarize_scalar(variance_draws["delta_mito_variance"], "delta_mito_variance"))
     row["wt_image_variance"] = float(np.median(variance_draws["wt_image_variance"]))
     row["ko_image_variance"] = float(np.median(variance_draws["ko_image_variance"]))
-    row["wt_mito_variance"] = float(np.median(variance_draws["wt_mito_variance"]))
-    row["ko_mito_variance"] = float(np.median(variance_draws["ko_mito_variance"]))
+    row["wt_mito_variance"] = (
+        float("nan") if data.model_level == "image_summary" else float(np.median(variance_draws["wt_mito_variance"]))
+    )
+    row["ko_mito_variance"] = (
+        float("nan") if data.model_level == "image_summary" else float(np.median(variance_draws["ko_mito_variance"]))
+    )
     diagnostics = posterior_diagnostics(idata, diagnostic_names)
     row.update(diagnostics)
     ppc_summary = compute_ppc_summary(data, idata, random_seed=random_seed)
@@ -2185,6 +2930,7 @@ def analyze_metric(
     metric: str,
     positive_likelihood: str,
     bounded_likelihood: str,
+    real_likelihood: str,
     draws: int,
     tune: int,
     chains: int,
@@ -2194,6 +2940,7 @@ def analyze_metric(
     retry_max_draws: int,
     retry_max_tune: int,
     retry_max_target_accept: float,
+    model_level: str = "instance",
 ) -> MetricAnalysisResult:
     """Fit one metric within one muscle and return a summary row.
 
@@ -2203,6 +2950,7 @@ def analyze_metric(
         metric (str): Metric column to fit.
         positive_likelihood (str): Positive-family likelihood name used when applicable.
         bounded_likelihood (str): Bounded-family likelihood strategy used when applicable.
+        real_likelihood (str): Real-valued likelihood name used when applicable.
         draws (int): Number of posterior draws per chain.
         tune (int): Number of warmup draws per chain.
         chains (int): Number of MCMC chains.
@@ -2212,18 +2960,29 @@ def analyze_metric(
         retry_max_draws (int): Upper cap for adaptive retry posterior draws per chain.
         retry_max_tune (int): Upper cap for adaptive retry warmup draws per chain.
         retry_max_target_accept (float): Upper cap for adaptive retry NUTS target acceptance.
+        model_level (str): Analysis level, either ``instance`` or ``image_summary``.
 
     Returns:
         MetricAnalysisResult: Winning summary row plus prepared data and posterior samples.
     """
 
-    data = prepare_metric_data(
-        df=df,
-        muscle=muscle,
-        metric=metric,
-        positive_likelihood=positive_likelihood,
-        bounded_likelihood=bounded_likelihood,
-    )
+    if model_level == "image_summary":
+        data = prepare_image_summary_metric_data(
+            df=df,
+            muscle=muscle,
+            metric=metric,
+            positive_likelihood=positive_likelihood,
+            bounded_likelihood=bounded_likelihood,
+            real_likelihood=real_likelihood,
+        )
+    else:
+        data = prepare_metric_data(
+            df=df,
+            muscle=muscle,
+            metric=metric,
+            positive_likelihood=positive_likelihood,
+            bounded_likelihood=bounded_likelihood,
+        )
     attempt_results: list[MetricAnalysisResult] = []
     engine_warning_message = ""
 
@@ -2334,19 +3093,30 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def fit_likelihood_arguments(fit_config: BayesFitConfig) -> tuple[str, str]:
+def fit_likelihood_arguments(
+    fit_config: BayesFitConfig,
+    model_level: str = "instance",
+) -> tuple[str, str, str]:
     """Resolve positive and bounded likelihood arguments for one fit config.
 
     Args:
         fit_config (BayesFitConfig): Per-fit configuration from the YAML file.
+        model_level (str): Analysis level, either ``instance`` or ``image_summary``.
 
     Returns:
-        tuple[str, str]: Positive and bounded likelihood names for `analyze_metric()`.
+        tuple[str, str, str]: Positive, bounded, and real likelihood names for `analyze_metric()`.
     """
 
-    if fit_config.metric in POSITIVE_METRICS:
-        return fit_config.likelihood, "beta"
-    return "gamma", fit_config.likelihood
+    positive_metrics = IMAGE_SUMMARY_POSITIVE_METRICS if model_level == "image_summary" else POSITIVE_METRICS
+    bounded_metrics = IMAGE_SUMMARY_BOUNDED_METRICS if model_level == "image_summary" else BOUNDED_METRICS
+    real_metrics = IMAGE_SUMMARY_REAL_METRICS if model_level == "image_summary" else ()
+    if fit_config.metric in positive_metrics:
+        return fit_config.likelihood, "beta", REAL_LIKELIHOODS[0]
+    if fit_config.metric in bounded_metrics:
+        return "gamma", fit_config.likelihood, REAL_LIKELIHOODS[0]
+    if fit_config.metric in real_metrics:
+        return "gamma", "beta", fit_config.likelihood
+    raise ValueError(f"Unsupported configured metric: {fit_config.metric}")
 
 
 def merge_result_rows(
@@ -2408,8 +3178,77 @@ def finalize_fit_artifacts(
     return MetricAnalysisResult(row=row, data=result.data, idata=idata)
 
 
+def run_analysis(
+    config_path: Path,
+    analysis: BayesAnalysisConfig,
+    model_level: str,
+) -> None:
+    """Run one configured Bayesian analysis and save its summary CSV.
+
+    Args:
+        config_path (Path): YAML configuration path used for status messages.
+        analysis (BayesAnalysisConfig): Normalized analysis configuration to run.
+        model_level (str): Analysis level, either ``instance`` or ``image_summary``.
+
+    Returns:
+        None
+    """
+
+    if not analysis.enabled:
+        print(f"Analysis {analysis.analysis_id} is disabled in {config_path}; nothing to do.")
+        return
+    df = load_measurements(analysis.paths.input_csv)
+    validate_config_muscles(config=analysis, valid_muscles=set(df["Muscle"].dropna().unique().tolist()))
+    fit_configs = repeated_fit_configs(analysis)
+    if not fit_configs:
+        print(f"No {analysis.analysis_id} fits have repeat=true in {config_path}; nothing to do.")
+        return
+    rows: list[dict[str, Any]] = []
+    for fit_index, fit_config in enumerate(fit_configs):
+        seed = analysis.runtime.seed + fit_index
+        positive_likelihood, bounded_likelihood, real_likelihood = fit_likelihood_arguments(
+            fit_config=fit_config,
+            model_level=model_level,
+        )
+        print(f"Fitting {analysis.analysis_id} {fit_config.metric} for {fit_config.muscle}...")
+        result = analyze_metric(
+            df=df,
+            muscle=fit_config.muscle,
+            metric=fit_config.metric,
+            positive_likelihood=positive_likelihood,
+            bounded_likelihood=bounded_likelihood,
+            real_likelihood=real_likelihood,
+            draws=fit_config.draws,
+            tune=fit_config.tune,
+            chains=fit_config.chains,
+            cores=analysis.runtime.cores,
+            target_accept=fit_config.target_accept,
+            random_seed=seed,
+            retry_max_draws=analysis.runtime.retry_max_draws,
+            retry_max_tune=analysis.runtime.retry_max_tune,
+            retry_max_target_accept=analysis.runtime.retry_max_target_accept,
+            model_level=model_level,
+        )
+        finalized_result = finalize_fit_artifacts(
+            result=result,
+            trace_dir=None if not analysis.runtime.save_idata else analysis.paths.trace_dir,
+            random_seed=seed + 10_000,
+        )
+        rows.append(finalized_result.row)
+
+    result_df = pd.DataFrame(rows)
+    result_df = merge_result_rows(
+        output_path=analysis.paths.summary_csv,
+        new_rows_df=result_df,
+        update_mode=analysis.runtime.summary_update_mode,
+    )
+    analysis.paths.summary_csv.parent.mkdir(parents=True, exist_ok=True)
+    result_df.to_csv(analysis.paths.summary_csv, index=False)
+    print(f"Saved {analysis.analysis_id} results to {analysis.paths.summary_csv}")
+
+
 def main() -> None:
-    """Run the full hierarchical Bayesian analysis and save a summary CSV.
+    """Run all configured hierarchical Bayesian analyses and save summary CSVs.
 
     Args:
         None
@@ -2423,50 +3262,17 @@ def main() -> None:
         path=args.config,
         positive_metrics=tuple(POSITIVE_METRICS),
         bounded_metrics=tuple(BOUNDED_METRICS),
+        image_summary_positive_metrics=tuple(IMAGE_SUMMARY_POSITIVE_METRICS),
+        image_summary_bounded_metrics=tuple(IMAGE_SUMMARY_BOUNDED_METRICS),
+        image_summary_real_metrics=tuple(IMAGE_SUMMARY_REAL_METRICS),
     )
-    df = load_measurements(config.paths.input_csv)
-    validate_config_muscles(config=config, valid_muscles=set(df["Muscle"].dropna().unique().tolist()))
-    fit_configs = repeated_fit_configs(config)
-    if not fit_configs:
-        print(f"No fits have repeat=true in {config.config_path}; nothing to do.")
-        return
-    rows: list[dict[str, Any]] = []
-    for fit_index, fit_config in enumerate(fit_configs):
-        seed = config.runtime.seed + fit_index
-        positive_likelihood, bounded_likelihood = fit_likelihood_arguments(fit_config=fit_config)
-        print(f"Fitting {fit_config.metric} for {fit_config.muscle}...")
-        result = analyze_metric(
-            df=df,
-            muscle=fit_config.muscle,
-            metric=fit_config.metric,
-            positive_likelihood=positive_likelihood,
-            bounded_likelihood=bounded_likelihood,
-            draws=fit_config.draws,
-            tune=fit_config.tune,
-            chains=fit_config.chains,
-            cores=config.runtime.cores,
-            target_accept=fit_config.target_accept,
-            random_seed=seed,
-            retry_max_draws=config.runtime.retry_max_draws,
-            retry_max_tune=config.runtime.retry_max_tune,
-            retry_max_target_accept=config.runtime.retry_max_target_accept,
+    for analysis_id, analysis in config.analyses_by_id.items():
+        model_level = "image_summary" if analysis_id == "image_summary" else "instance"
+        run_analysis(
+            config_path=args.config,
+            analysis=analysis,
+            model_level=model_level,
         )
-        finalized_result = finalize_fit_artifacts(
-            result=result,
-            trace_dir=None if not config.runtime.save_idata else config.paths.trace_dir,
-            random_seed=seed + 10_000,
-        )
-        rows.append(finalized_result.row)
-
-    result_df = pd.DataFrame(rows)
-    result_df = merge_result_rows(
-        output_path=config.paths.summary_csv,
-        new_rows_df=result_df,
-        update_mode=config.runtime.summary_update_mode,
-    )
-    config.paths.summary_csv.parent.mkdir(parents=True, exist_ok=True)
-    result_df.to_csv(config.paths.summary_csv, index=False)
-    print(f"Saved results to {config.paths.summary_csv}")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ ALLOWED_SUMMARY_UPDATE_MODES = ("merge", "replace")
 ALLOWED_VISUALIZATION_REFRESH_MODES = ("never", "refit_first", "rerun_missing_traces")
 ALLOWED_POSITIVE_LIKELIHOODS = ("gamma", "lognormal")
 ALLOWED_BOUNDED_LIKELIHOODS = ("beta", "zero_one_inflated_beta", "logitnormal", "logit_skew_normal")
+ALLOWED_REAL_LIKELIHOODS = ("normal",)
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,19 @@ class BayesFitConfig:
 
 
 @dataclass(frozen=True)
+class BayesAnalysisConfig:
+    """Normalized configuration for one Bayesian analysis dataset."""
+
+    analysis_id: str
+    enabled: bool
+    paths: BayesPathConfig
+    runtime: BayesRuntimeConfig
+    fit_order: tuple[str, ...]
+    fits_by_id: dict[str, BayesFitConfig]
+    fits_by_pair: dict[tuple[str, str], BayesFitConfig]
+
+
+@dataclass(frozen=True)
 class HierarchicalBayesConfig:
     """Normalized hierarchical Bayes workflow configuration."""
 
@@ -72,6 +86,8 @@ class HierarchicalBayesConfig:
     fit_order: tuple[str, ...]
     fits_by_id: dict[str, BayesFitConfig]
     fits_by_pair: dict[tuple[str, str], BayesFitConfig]
+    enabled: bool
+    analyses_by_id: dict[str, BayesAnalysisConfig]
 
 
 def require_mapping(
@@ -326,12 +342,14 @@ def validate_available_options(section: dict[str, Any]) -> None:
             "visualization_refresh_modes",
             "repeat_options",
         },
+        optional_keys={"real_likelihoods"},
     )
     positive_likelihoods = tuple(section["positive_likelihoods"])
     bounded_likelihoods = tuple(section["bounded_likelihoods"])
     summary_update_modes = tuple(section["summary_update_modes"])
     visualization_refresh_modes = tuple(section["visualization_refresh_modes"])
     repeat_options = tuple(section["repeat_options"])
+    real_likelihoods = tuple(section.get("real_likelihoods", ALLOWED_REAL_LIKELIHOODS))
     if positive_likelihoods != ALLOWED_POSITIVE_LIKELIHOODS:
         raise ValueError(
             "Config section 'available_options.positive_likelihoods' must be "
@@ -356,6 +374,11 @@ def validate_available_options(section: dict[str, Any]) -> None:
         raise ValueError(
             "Config section 'available_options.repeat_options' must be [true, false]."
         )
+    if real_likelihoods != ALLOWED_REAL_LIKELIHOODS:
+        raise ValueError(
+            "Config section 'available_options.real_likelihoods' must be "
+            f"{list(ALLOWED_REAL_LIKELIHOODS)}."
+        )
 
 
 def parse_fit_entry(
@@ -363,6 +386,7 @@ def parse_fit_entry(
     section: dict[str, Any],
     positive_metrics: tuple[str, ...],
     bounded_metrics: tuple[str, ...],
+    real_metrics: tuple[str, ...] = (),
 ) -> BayesFitConfig:
     """Parse and validate one `fits` entry from the YAML config.
 
@@ -371,6 +395,7 @@ def parse_fit_entry(
         section (dict[str, Any]): Raw fit mapping from the YAML config.
         positive_metrics (tuple[str, ...]): Metric names allowed to use positive likelihoods.
         bounded_metrics (tuple[str, ...]): Metric names allowed to use bounded likelihoods.
+        real_metrics (tuple[str, ...]): Metric names allowed to use real-valued likelihoods.
 
     Returns:
         BayesFitConfig: Validated per-fit configuration.
@@ -400,6 +425,13 @@ def parse_fit_entry(
                 "Config value "
                 f"'{section_name}.likelihood' must be one of {list(ALLOWED_BOUNDED_LIKELIHOODS)} for metric '{metric}'."
             )
+    elif metric in real_metrics:
+        metric_family = "real"
+        if likelihood not in ALLOWED_REAL_LIKELIHOODS:
+            raise ValueError(
+                "Config value "
+                f"'{section_name}.likelihood' must be one of {list(ALLOWED_REAL_LIKELIHOODS)} for metric '{metric}'."
+            )
     if metric_family == "unknown":
         raise ValueError(f"Config value '{section_name}.metric' is not a supported metric: {metric}.")
     return BayesFitConfig(
@@ -419,6 +451,7 @@ def validate_fit_coverage(
     fits_by_pair: dict[tuple[str, str], BayesFitConfig],
     positive_metrics: tuple[str, ...],
     bounded_metrics: tuple[str, ...],
+    real_metrics: tuple[str, ...] = (),
 ) -> None:
     """Require explicit per-metric coverage for each muscle present in the config.
 
@@ -426,12 +459,13 @@ def validate_fit_coverage(
         fits_by_pair (dict[tuple[str, str], BayesFitConfig]): Fit configs keyed by `(muscle, metric)`.
         positive_metrics (tuple[str, ...]): Supported positive metric names.
         bounded_metrics (tuple[str, ...]): Supported bounded metric names.
+        real_metrics (tuple[str, ...]): Supported real-valued metric names.
 
     Returns:
         None
     """
 
-    all_metrics = tuple(positive_metrics) + tuple(bounded_metrics)
+    all_metrics = tuple(positive_metrics) + tuple(bounded_metrics) + tuple(real_metrics)
     muscles = sorted({muscle for muscle, _ in fits_by_pair})
     missing_pairs = [
         (muscle, metric)
@@ -446,10 +480,87 @@ def validate_fit_coverage(
         )
 
 
+def parse_analysis_config(
+    analysis_id: str,
+    config_mapping: dict[str, Any],
+    positive_metrics: tuple[str, ...],
+    bounded_metrics: tuple[str, ...],
+    real_metrics: tuple[str, ...] = (),
+) -> BayesAnalysisConfig:
+    """Parse one analysis config section into a normalized object.
+
+    Args:
+        analysis_id (str): Identifier for the analysis section being parsed.
+        config_mapping (dict[str, Any]): Raw mapping containing paths, runtime, options, and fits.
+        positive_metrics (tuple[str, ...]): Supported positive metric names.
+        bounded_metrics (tuple[str, ...]): Supported bounded metric names.
+        real_metrics (tuple[str, ...]): Supported real-valued metric names.
+
+    Returns:
+        BayesAnalysisConfig: Validated analysis configuration.
+    """
+
+    validate_section_keys(
+        section_name=analysis_id,
+        section=config_mapping,
+        required_keys={"paths", "runtime", "available_options", "fits"},
+        optional_keys={"enabled"},
+    )
+    enabled = require_bool(
+        analysis_id,
+        "enabled",
+        config_mapping.get("enabled", True),
+    )
+    paths = parse_paths_section(require_mapping(f"{analysis_id}.paths", config_mapping["paths"]))
+    runtime = parse_runtime_section(require_mapping(f"{analysis_id}.runtime", config_mapping["runtime"]))
+    validate_available_options(require_mapping(f"{analysis_id}.available_options", config_mapping["available_options"]))
+    fits_section = require_mapping(f"{analysis_id}.fits", config_mapping["fits"])
+    if not fits_section:
+        raise ValueError(f"Config section '{analysis_id}.fits' must contain at least one fit entry.")
+    fit_order = tuple(fits_section.keys())
+    fits_by_id: dict[str, BayesFitConfig] = {}
+    fits_by_pair: dict[tuple[str, str], BayesFitConfig] = {}
+    for fit_id in fit_order:
+        fit_config = parse_fit_entry(
+            fit_id=fit_id,
+            section=require_mapping(f"{analysis_id}.fits.{fit_id}", fits_section[fit_id]),
+            positive_metrics=positive_metrics,
+            bounded_metrics=bounded_metrics,
+            real_metrics=real_metrics,
+        )
+        fit_pair = (fit_config.muscle, fit_config.metric)
+        if fit_pair in fits_by_pair:
+            raise ValueError(
+                f"Config section '{analysis_id}.fits' contains duplicate muscle/metric entries for "
+                f"{fit_pair}."
+            )
+        fits_by_id[fit_id] = fit_config
+        fits_by_pair[fit_pair] = fit_config
+    validate_fit_coverage(
+        fits_by_pair=fits_by_pair,
+        positive_metrics=positive_metrics,
+        bounded_metrics=bounded_metrics,
+        real_metrics=real_metrics,
+    )
+    return BayesAnalysisConfig(
+        analysis_id=analysis_id,
+        enabled=enabled,
+        paths=paths,
+        runtime=runtime,
+        fit_order=fit_order,
+        fits_by_id=fits_by_id,
+        fits_by_pair=fits_by_pair,
+    )
+
+
 def load_hierarchical_bayes_config(
     path: Path,
     positive_metrics: tuple[str, ...],
     bounded_metrics: tuple[str, ...],
+    real_metrics: tuple[str, ...] = (),
+    image_summary_positive_metrics: tuple[str, ...] = (),
+    image_summary_bounded_metrics: tuple[str, ...] = (),
+    image_summary_real_metrics: tuple[str, ...] = (),
 ) -> HierarchicalBayesConfig:
     """Load, validate, and normalize the hierarchical Bayes YAML config.
 
@@ -457,6 +568,10 @@ def load_hierarchical_bayes_config(
         path (Path): YAML configuration path.
         positive_metrics (tuple[str, ...]): Supported positive metric names.
         bounded_metrics (tuple[str, ...]): Supported bounded metric names.
+        real_metrics (tuple[str, ...]): Supported real-valued metric names for the root analysis.
+        image_summary_positive_metrics (tuple[str, ...]): Positive metric names for the optional image-summary analysis.
+        image_summary_bounded_metrics (tuple[str, ...]): Bounded metric names for the optional image-summary analysis.
+        image_summary_real_metrics (tuple[str, ...]): Real metric names for the optional image-summary analysis.
 
     Returns:
         HierarchicalBayesConfig: Validated workflow configuration.
@@ -469,43 +584,55 @@ def load_hierarchical_bayes_config(
         section_name="root",
         section=config_mapping,
         required_keys={"paths", "runtime", "available_options", "fits"},
+        optional_keys={"enabled", "analysis_id", "image_summary"},
     )
-    paths = parse_paths_section(require_mapping("paths", config_mapping["paths"]))
-    runtime = parse_runtime_section(require_mapping("runtime", config_mapping["runtime"]))
-    validate_available_options(require_mapping("available_options", config_mapping["available_options"]))
-    fits_section = require_mapping("fits", config_mapping["fits"])
-    if not fits_section:
-        raise ValueError("Config section 'fits' must contain at least one fit entry.")
-    fit_order = tuple(fits_section.keys())
-    fits_by_id: dict[str, BayesFitConfig] = {}
-    fits_by_pair: dict[tuple[str, str], BayesFitConfig] = {}
-    for fit_id in fit_order:
-        fit_config = parse_fit_entry(
-            fit_id=fit_id,
-            section=require_mapping(f"fits.{fit_id}", fits_section[fit_id]),
-            positive_metrics=positive_metrics,
-            bounded_metrics=bounded_metrics,
+    root_analysis_id = require_string(
+        "root",
+        "analysis_id",
+        config_mapping.get("analysis_id", "instance"),
+    )
+    if root_analysis_id not in {"instance", "image_summary"}:
+        raise ValueError("Config value 'root.analysis_id' must be either 'instance' or 'image_summary'.")
+    if root_analysis_id == "image_summary":
+        root_positive_metrics = image_summary_positive_metrics
+        root_bounded_metrics = image_summary_bounded_metrics
+        root_real_metrics = image_summary_real_metrics
+    else:
+        root_positive_metrics = positive_metrics
+        root_bounded_metrics = bounded_metrics
+        root_real_metrics = real_metrics
+    root_analysis = parse_analysis_config(
+        analysis_id=root_analysis_id,
+        config_mapping={
+            "enabled": config_mapping.get("enabled", True),
+            "paths": config_mapping["paths"],
+            "runtime": config_mapping["runtime"],
+            "available_options": config_mapping["available_options"],
+            "fits": config_mapping["fits"],
+        },
+        positive_metrics=root_positive_metrics,
+        bounded_metrics=root_bounded_metrics,
+        real_metrics=root_real_metrics,
+    )
+    analyses_by_id = {root_analysis.analysis_id: root_analysis}
+    if "image_summary" in config_mapping:
+        image_summary_analysis = parse_analysis_config(
+            analysis_id="image_summary",
+            config_mapping=require_mapping("image_summary", config_mapping["image_summary"]),
+            positive_metrics=image_summary_positive_metrics,
+            bounded_metrics=image_summary_bounded_metrics,
+            real_metrics=image_summary_real_metrics,
         )
-        fit_pair = (fit_config.muscle, fit_config.metric)
-        if fit_pair in fits_by_pair:
-            raise ValueError(
-                "Config section 'fits' contains duplicate muscle/metric entries for "
-                f"{fit_pair}."
-            )
-        fits_by_id[fit_id] = fit_config
-        fits_by_pair[fit_pair] = fit_config
-    validate_fit_coverage(
-        fits_by_pair=fits_by_pair,
-        positive_metrics=positive_metrics,
-        bounded_metrics=bounded_metrics,
-    )
+        analyses_by_id["image_summary"] = image_summary_analysis
     return HierarchicalBayesConfig(
         config_path=Path(path),
-        paths=paths,
-        runtime=runtime,
-        fit_order=fit_order,
-        fits_by_id=fits_by_id,
-        fits_by_pair=fits_by_pair,
+        paths=root_analysis.paths,
+        runtime=root_analysis.runtime,
+        fit_order=root_analysis.fit_order,
+        fits_by_id=root_analysis.fits_by_id,
+        fits_by_pair=root_analysis.fits_by_pair,
+        enabled=root_analysis.enabled,
+        analyses_by_id=analyses_by_id,
     )
 
 
@@ -519,6 +646,8 @@ def repeated_fit_configs(config: HierarchicalBayesConfig) -> list[BayesFitConfig
         list[BayesFitConfig]: Enabled fit entries in YAML order.
     """
 
+    if not config.enabled:
+        return []
     return [
         config.fits_by_id[fit_id]
         for fit_id in config.fit_order

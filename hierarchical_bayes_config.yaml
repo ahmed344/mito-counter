@@ -1,6 +1,9 @@
 # Strict configuration for the hierarchical Bayes fit and visualization workflows.
 # Every required key must be present. The Python loader intentionally fails fast on missing keys.
 
+enabled: true # Set to false to skip all calculations and visualizations for this config.
+analysis_id: "instance" # Options: `instance` for per-mitochondrion measurements, `image_summary` for one-row-per-image summaries.
+
 paths:
   input_csv: "/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv" # Cleaned per-mitochondrion measurements CSV consumed by both scripts.
   summary_csv: "/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics.csv" # Summary CSV that is updated in place by muscle/metric key.

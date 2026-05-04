@@ -1,0 +1,247 @@
+# Strict configuration for image-summary hierarchical Bayes fit and visualization workflows.
+# Every required key must be present. The Python loader intentionally fails fast on missing keys.
+
+enabled: true # Set to false to skip all calculations and visualizations for this config.
+analysis_id: "image_summary" # Options: `instance` for per-mitochondrion measurements, `image_summary` for one-row-per-image summaries.
+
+paths:
+  input_csv: "/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned_image_summary.csv" # Cleaned image-summary measurements CSV with one row per image.
+  summary_csv: "/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics_image_summary.csv" # Separate summary CSV for image-summary Bayesian results.
+  trace_dir: "/workspaces/mito-counter/data/Calpaine_3/results/bayes_traces_image_summary" # Separate NetCDF trace directory for image-summary fits.
+  figure_root: "/workspaces/mito-counter/data/Calpaine_3/results/figures/bayesian_image_summary" # Separate figure root for image-summary visualizations.
+
+runtime:
+  cores: 30
+  seed: 20260430
+  save_idata: true
+  summary_update_mode: "merge"
+  visualization_refresh_mode: "rerun_missing_traces"
+  retry_max_draws: 10000
+  retry_max_tune: 10000
+  retry_max_target_accept: 0.999
+
+available_options:
+  positive_likelihoods: ["gamma", "lognormal"]
+  bounded_likelihoods: ["beta", "zero_one_inflated_beta", "logitnormal", "logit_skew_normal"]
+  real_likelihoods: ["normal"]
+  summary_update_modes: ["merge", "replace"]
+  visualization_refresh_modes: ["never", "refit_first", "rerun_missing_traces"]
+  repeat_options: [true, false]
+
+fits:
+  soleus_density:
+    muscle: "Soleus"
+    metric: "Density"
+    repeat: true
+    likelihood: "gamma"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  soleus_voronoi_cell_area_center_cv:
+    muscle: "Soleus"
+    metric: "Voronoi_Cell_Area_center_cv"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  soleus_ripley_l_integral:
+    muscle: "Soleus"
+    metric: "Ripley_L_integral"
+    repeat: true
+    likelihood: "normal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  soleus_pair_correlation_integral:
+    muscle: "Soleus"
+    metric: "Pair_Correlation_integral"
+    repeat: true
+    likelihood: "normal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  soleus_corrected_area_sum:
+    muscle: "Soleus"
+    metric: "Corrected_area_sum"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  soleus_minimum_feret_diameter_sum:
+    muscle: "Soleus"
+    metric: "Minimum_Feret_Diameter_sum"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  soleus_minimum_feret_diameter_mean:
+    muscle: "Soleus"
+    metric: "Minimum_Feret_Diameter_mean"
+    repeat: true
+    likelihood: "gamma"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  soleus_elongation_mean:
+    muscle: "Soleus"
+    metric: "Elongation_mean"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  soleus_circularity_mean:
+    muscle: "Soleus"
+    metric: "Circularity_mean"
+    repeat: true
+    likelihood: "logit_skew_normal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  soleus_solidity_mean:
+    muscle: "Soleus"
+    metric: "Solidity_mean"
+    repeat: true
+    likelihood: "logit_skew_normal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  soleus_3nnd_center_mean:
+    muscle: "Soleus"
+    metric: "3NND_center_mean"
+    repeat: true
+    likelihood: "gamma"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  soleus_voronoi_cell_area_center_mean:
+    muscle: "Soleus"
+    metric: "Voronoi_Cell_Area_center_mean"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_density:
+    muscle: "Tibialis Anterior"
+    metric: "Density"
+    repeat: true
+    likelihood: "gamma"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_voronoi_cell_area_center_cv:
+    muscle: "Tibialis Anterior"
+    metric: "Voronoi_Cell_Area_center_cv"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_ripley_l_integral:
+    muscle: "Tibialis Anterior"
+    metric: "Ripley_L_integral"
+    repeat: true
+    likelihood: "normal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_pair_correlation_integral:
+    muscle: "Tibialis Anterior"
+    metric: "Pair_Correlation_integral"
+    repeat: true
+    likelihood: "normal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_corrected_area_sum:
+    muscle: "Tibialis Anterior"
+    metric: "Corrected_area_sum"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_minimum_feret_diameter_sum:
+    muscle: "Tibialis Anterior"
+    metric: "Minimum_Feret_Diameter_sum"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_minimum_feret_diameter_mean:
+    muscle: "Tibialis Anterior"
+    metric: "Minimum_Feret_Diameter_mean"
+    repeat: true
+    likelihood: "gamma"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_elongation_mean:
+    muscle: "Tibialis Anterior"
+    metric: "Elongation_mean"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_circularity_mean:
+    muscle: "Tibialis Anterior"
+    metric: "Circularity_mean"
+    repeat: true
+    likelihood: "logit_skew_normal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_solidity_mean:
+    muscle: "Tibialis Anterior"
+    metric: "Solidity_mean"
+    repeat: true
+    likelihood: "logit_skew_normal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_3nnd_center_mean:
+    muscle: "Tibialis Anterior"
+    metric: "3NND_center_mean"
+    repeat: true
+    likelihood: "gamma"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior_voronoi_cell_area_center_mean:
+    muscle: "Tibialis Anterior"
+    metric: "Voronoi_Cell_Area_center_mean"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 1500
+    tune: 1500
+    chains: 4
+    target_accept: 0.99

@@ -28,11 +28,16 @@ sns.set_style("whitegrid")
 # %% Load and prepare input data
 # Read per-object morphological measurements exported by the pipeline.
 df = pd.read_csv("/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv")
+df_image_summary = pd.read_csv(
+    "/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned_image_summary.csv"
+)
 excluded_measurements = {"Connected_parts", "Image_Region"}
 
 # Treat grouping columns as categorical to keep consistent ordering/group handling.
 df["Condition"] = df["Condition"].astype("category")
 df["Muscle"] = df["Muscle"].astype("category")
+df_image_summary["Condition"] = df_image_summary["Condition"].astype("category")
+df_image_summary["Muscle"] = df_image_summary["Muscle"].astype("category")
 
 # Display the first few rows of the dataframe
 df.head()
@@ -92,11 +97,41 @@ units = {
     "3NND": "nm",
     "5NND": "nm",
     "Voronoi_Cell_Area": "nm^2",
+    "Density": "count/image",
+    "Voronoi_Cell_Area_center_cv": "",
+    "Ripley_L_integral": "nm^2",
+    "Pair_Correlation_integral": "",
+    "Corrected_area_sum": "nm^2",
+    "Minimum_Feret_Diameter_sum": "nm",
+    "Minimum_Feret_Diameter_mean": "nm",
+    "Elongation_mean": "",
+    "Circularity_mean": "",
+    "Solidity_mean": "",
+    "3NND_center_mean": "nm",
+    "Voronoi_Cell_Area_center_mean": "nm^2",
 }
 # %% Generate annotated comparison boxplots
 # All plots are saved to the same figures directory.
 save_dir = Path('/workspaces/mito-counter/data/Calpaine_3/results/figures')
+image_summary_save_dir = save_dir / "image_summary"
 bayesian_summary_csv = Path("/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics.csv")
+bayesian_image_summary_csv = Path(
+    "/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics_image_summary.csv"
+)
+image_summary_metrics = [
+    "Density",
+    "Voronoi_Cell_Area_center_cv",
+    "Ripley_L_integral",
+    "Pair_Correlation_integral",
+    "Corrected_area_sum",
+    "Minimum_Feret_Diameter_sum",
+    "Minimum_Feret_Diameter_mean",
+    "Elongation_mean",
+    "Circularity_mean",
+    "Solidity_mean",
+    "3NND_center_mean",
+    "Voronoi_Cell_Area_center_mean",
+]
 
 
 def load_bayesian_superplot_annotations(summary_csv):
@@ -157,6 +192,9 @@ def bayesian_annotations_for_metric(summary_df, metric):
 
 
 bayesian_summary_df = load_bayesian_superplot_annotations(summary_csv=bayesian_summary_csv)
+bayesian_image_summary_df = load_bayesian_superplot_annotations(
+    summary_csv=bayesian_image_summary_csv
+)
 
 # Plot Counts (No units needed, or you can add "objects" if you like)
 plot_metric_variants(
@@ -182,6 +220,23 @@ for measurment in metrics:
             save_dir=save_dir,
             superplot_annotations=bayesian_annotations_for_metric(
                 summary_df=bayesian_summary_df,
+                metric=measurment,
+            ),
+        )
+
+# Plot image-summary metrics with one observation per image.
+for measurment in image_summary_metrics:
+    if measurment in df_image_summary.columns:
+        plot_metric_variants(
+            data=df_image_summary,
+            x='Muscle',
+            y=measurment,
+            hue='Condition',
+            block='Block',
+            unit_dict=units,
+            save_dir=image_summary_save_dir,
+            superplot_annotations=bayesian_annotations_for_metric(
+                summary_df=bayesian_image_summary_df,
                 metric=measurment,
             ),
         )
