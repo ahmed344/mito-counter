@@ -36,7 +36,7 @@ SS_LABEL = "Sub-sarcolemmal (SS)"
 IMF_LABEL = "Intermyofibrillar (IMF)"
 COMPARTMENT_ORDER = [SS_LABEL, IMF_LABEL]
 MUSCLE_ORDER = ["Extraocular Muscle", "Tibialis Anterior"]
-EXCLUDED_MEASUREMENTS = {"Connected_parts", "Distance_to_cell_membrane"}
+EXCLUDED_MEASUREMENTS = {"Connected_parts", "Distance_to_cell_membrane", "Image_Region"}
 
 
 # %% Helper functions
@@ -316,6 +316,9 @@ units = {
     "Circularity": "",
     "Solidity": "",
     "NND": "um",
+    "3NND": "um",
+    "5NND": "um",
+    "Voronoi_Cell_Area": "um^2",
     "Count": "",
 }
 

@@ -408,6 +408,11 @@ def ensure_augmented_idata(
     )
     if all(variable in idata.posterior.data_vars for variable in required_variables):
         return idata
+    legacy_variables = [variable for variable in required_variables if variable != "delta_median_response"]
+    if "delta_median_response" not in idata.posterior.data_vars and all(
+        variable in idata.posterior.data_vars for variable in legacy_variables
+    ):
+        return idata
     return attach_response_scale_posterior(data=prepared, idata=idata)
 
 
@@ -661,10 +666,13 @@ def superplot_title_text(row: pd.Series) -> str:
     """
 
     title_lines = [fit_title(row)]
-    delta_summary = summary_text_or_empty(row.get("delta_mean_summary", ""))
+    delta_mean_summary = summary_text_or_empty(row.get("delta_mean_summary", ""))
+    delta_median_summary = summary_text_or_empty(row.get("delta_median_summary", ""))
     bf_summary = summary_text_or_empty(row.get("delta_mean_bf_summary", ""))
-    if delta_summary:
-        title_lines.append(delta_summary)
+    if delta_mean_summary:
+        title_lines.append(delta_mean_summary)
+    if delta_median_summary:
+        title_lines.append(delta_median_summary)
     if bf_summary:
         title_lines.append(bf_summary)
     return "\n".join(title_lines)
@@ -1402,6 +1410,7 @@ def posterior_plot_specs(row: pd.Series) -> list[tuple[str, str, str, str]]:
 
     specs = [
         ("delta_mean_response", "delta_mean_summary", "delta_mean", "Genotype delta in mean"),
+        ("delta_median_response", "delta_median_summary", "delta_median", "Genotype delta in median"),
         (
             "delta_image_variance_response",
             "delta_image_variance_summary",

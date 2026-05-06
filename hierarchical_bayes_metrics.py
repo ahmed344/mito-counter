@@ -20,6 +20,8 @@ import pymc as pm
 import pytensor.tensor as pt
 import xarray as xr
 from scipy.special import expit
+from scipy.stats import beta as beta_distribution
+from scipy.stats import gamma as gamma_distribution
 from scipy.stats import gaussian_kde, norm, skewnorm, wasserstein_distance
 
 from hierarchical_bayes_config import (
@@ -336,16 +338,19 @@ def biology_posterior_var_names(family: str, model_level: str = "instance") -> l
     if model_level == "image_summary":
         return [
             "delta_mean_response",
+            "delta_median_response",
             "delta_image_variance_response",
         ]
     if family == "positive":
         return [
             "delta_mean_response",
+            "delta_median_response",
             "delta_image_variance_response",
             "delta_mito_variance_response",
         ]
     return [
         "delta_mean_response",
+        "delta_median_response",
         "delta_image_variance_response",
         "delta_mito_variance_response",
     ]
@@ -980,6 +985,253 @@ def mean_over_selected_units(values: np.ndarray, mask: np.ndarray) -> np.ndarray
     if not np.any(selected_mask):
         raise ValueError("Expected at least one selected unit when averaging posterior draws.")
     return np.mean(np.asarray(values, dtype=float)[..., selected_mask], axis=-1)
+
+
+def median_over_selected_units(values: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Compute a draw-aligned median over selected units on the last axis.
+
+    Args:
+        values (np.ndarray): Array whose last axis indexes units such as observations or images.
+        mask (np.ndarray): Boolean mask selecting the units to summarize on the last axis.
+
+    Returns:
+        np.ndarray: Input draws summarized by median over the selected units.
+    """
+
+    selected_mask = np.asarray(mask, dtype=bool)
+    if not np.any(selected_mask):
+        raise ValueError("Expected at least one selected unit when computing posterior medians.")
+    return np.median(np.asarray(values, dtype=float)[..., selected_mask], axis=-1)
+
+
+def beta_median_from_mean_kappa(mean: np.ndarray, kappa: np.ndarray) -> np.ndarray:
+    """Compute Beta distribution medians from mean and concentration arrays.
+
+    Args:
+        mean (np.ndarray): Beta means in the open interval ``(0, 1)``.
+        kappa (np.ndarray): Positive Beta concentration parameters.
+
+    Returns:
+        np.ndarray: Median values for the corresponding Beta distributions.
+    """
+
+    clipped_mean = np.clip(np.asarray(mean, dtype=float), SMALL_VALUE, 1.0 - SMALL_VALUE)
+    clipped_kappa = np.clip(np.asarray(kappa, dtype=float), SMALL_VALUE, None)
+    alpha = np.clip(clipped_mean * clipped_kappa, SMALL_VALUE, None)
+    beta = np.clip((1.0 - clipped_mean) * clipped_kappa, SMALL_VALUE, None)
+    return np.asarray(beta_distribution.ppf(0.5, alpha, beta), dtype=float)
+
+
+def zero_one_inflated_beta_median(
+    beta_median: np.ndarray,
+    beta_alpha: np.ndarray,
+    beta_beta: np.ndarray,
+    boundary_mass: np.ndarray,
+    one_given_boundary: np.ndarray,
+) -> np.ndarray:
+    """Compute medians for a zero-one-inflated Beta mixture.
+
+    Args:
+        beta_median (np.ndarray): Median of the continuous Beta component.
+        beta_alpha (np.ndarray): Alpha shape parameter for the continuous Beta component.
+        beta_beta (np.ndarray): Beta shape parameter for the continuous Beta component.
+        boundary_mass (np.ndarray): Total point mass assigned to exact zero or one.
+        one_given_boundary (np.ndarray): Conditional probability of one given boundary mass.
+
+    Returns:
+        np.ndarray: Median values for the zero-one-inflated Beta mixture.
+    """
+
+    boundary = np.clip(np.asarray(boundary_mass, dtype=float), 0.0, 1.0)
+    one_probability = np.clip(np.asarray(one_given_boundary, dtype=float), 0.0, 1.0)
+    zero_weight = boundary * (1.0 - one_probability)
+    beta_weight = np.clip(1.0 - boundary, 0.0, 1.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        beta_probability = np.clip((0.5 - zero_weight) / beta_weight, 0.0, 1.0)
+    continuous_median = np.asarray(
+        beta_distribution.ppf(beta_probability, beta_alpha, beta_beta),
+        dtype=float,
+    )
+    continuous_median = np.where(np.isfinite(continuous_median), continuous_median, beta_median)
+    return np.where(
+        zero_weight >= 0.5,
+        0.0,
+        np.where(zero_weight + beta_weight >= 0.5, continuous_median, 1.0),
+    )
+
+
+def positive_distribution_median(
+    mean: np.ndarray,
+    variance: np.ndarray,
+    likelihood_name: str,
+) -> np.ndarray:
+    """Compute response medians for positive Gamma or LogNormal likelihoods.
+
+    Args:
+        mean (np.ndarray): Positive response means on the modeled scale.
+        variance (np.ndarray): Positive response variances on the modeled scale.
+        likelihood_name (str): Positive likelihood name, either ``gamma`` or ``lognormal``.
+
+    Returns:
+        np.ndarray: Median values on the modeled scale.
+    """
+
+    clipped_mean = np.clip(np.asarray(mean, dtype=float), SMALL_VALUE, None)
+    clipped_variance = np.clip(np.asarray(variance, dtype=float), SMALL_VALUE, None)
+    if likelihood_name == "lognormal":
+        log_mu, _ = lognormal_mu_sigma_from_mean_variance(mean=clipped_mean, variance=clipped_variance)
+        return np.exp(log_mu)
+    gamma_shape = np.square(clipped_mean) / clipped_variance
+    gamma_scale = clipped_variance / clipped_mean
+    return np.asarray(gamma_distribution.ppf(0.5, a=gamma_shape, scale=gamma_scale), dtype=float)
+
+
+def logit_skew_normal_median(
+    logit_location: np.ndarray,
+    sigma: np.ndarray,
+    alpha: np.ndarray,
+) -> np.ndarray:
+    """Compute response medians for a logit-skew-normal distribution.
+
+    Args:
+        logit_location (np.ndarray): Location parameter on the logit scale.
+        sigma (np.ndarray): Positive scale parameter on the logit scale.
+        alpha (np.ndarray): Skewness parameter on the logit scale.
+
+    Returns:
+        np.ndarray: Median values transformed back to the response scale.
+    """
+
+    location_array = np.asarray(logit_location, dtype=float)
+    sigma_array = np.asarray(sigma, dtype=float)
+    alpha_array = np.asarray(alpha, dtype=float)
+    while sigma_array.ndim < location_array.ndim:
+        sigma_array = sigma_array[..., None]
+    while alpha_array.ndim < location_array.ndim:
+        alpha_array = alpha_array[..., None]
+    median_logit = skewnorm.ppf(
+        0.5,
+        a=np.broadcast_to(alpha_array, location_array.shape),
+        loc=location_array,
+        scale=np.broadcast_to(sigma_array, location_array.shape),
+    )
+    return expit(median_logit)
+
+
+def genotype_response_median_draws(
+    data: PreparedMetricData,
+    posterior: xr.Dataset,
+) -> dict[str, np.ndarray]:
+    """Compute draw-aligned WT, KO, and delta response medians by genotype.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        posterior (xr.Dataset): Posterior dataset containing fitted generative parameters.
+
+    Returns:
+        dict[str, np.ndarray]: Draw-aligned genotype medians and ``KO - WT`` median deltas.
+    """
+
+    obs_image_idx = data.image_idx_obs
+    obs_genotype_idx = data.genotype_idx_obs
+    wt_observations = obs_genotype_idx == 0
+    ko_observations = obs_genotype_idx == 1
+    image_mean = np.asarray(posterior["image_mean"], dtype=float)
+    parent_mean = image_mean[..., obs_image_idx]
+
+    if data.model_level == "image_summary":
+        if data.family == "positive":
+            image_variance = np.asarray(posterior["image_variance"], dtype=float)
+            obs_variance = image_variance[..., obs_genotype_idx]
+            conditional_median = positive_distribution_median(
+                mean=parent_mean,
+                variance=obs_variance,
+                likelihood_name=data.likelihood_name,
+            )
+            conditional_median = data.positive_offset + data.positive_scale * conditional_median
+        elif data.family == "real":
+            conditional_median = data.positive_offset + data.positive_scale * parent_mean
+        elif data.likelihood_name == "logitnormal":
+            image_logit_mean = np.asarray(posterior["image_logit_mean"], dtype=float)
+            conditional_median = expit(image_logit_mean[..., obs_image_idx])
+        elif data.likelihood_name == "logit_skew_normal":
+            image_logit_mean = np.asarray(posterior["image_logit_mean"], dtype=float)
+            image_sigma = np.asarray(posterior["image_sigma"], dtype=float)
+            conditional_median = logit_skew_normal_median(
+                logit_location=image_logit_mean[..., obs_image_idx],
+                sigma=image_sigma[..., obs_genotype_idx],
+                alpha=np.asarray(posterior["skew_alpha"], dtype=float),
+            )
+        else:
+            kappa_image = np.asarray(posterior["kappa_image"], dtype=float)
+            obs_kappa = kappa_image[..., obs_genotype_idx]
+            conditional_median = beta_median_from_mean_kappa(mean=parent_mean, kappa=obs_kappa)
+            if data.likelihood_name == "zero_one_inflated_beta":
+                clipped_mean = np.clip(parent_mean, SMALL_VALUE, 1.0 - SMALL_VALUE)
+                clipped_kappa = np.clip(obs_kappa, SMALL_VALUE, None)
+                alpha = np.clip(clipped_mean * clipped_kappa, SMALL_VALUE, None)
+                beta = np.clip((1.0 - clipped_mean) * clipped_kappa, SMALL_VALUE, None)
+                boundary_mass = np.asarray(posterior["boundary_mass"], dtype=float)[..., obs_genotype_idx]
+                one_given_boundary = np.asarray(posterior["one_given_boundary"], dtype=float)[
+                    ...,
+                    obs_genotype_idx,
+                ]
+                conditional_median = zero_one_inflated_beta_median(
+                    beta_median=conditional_median,
+                    beta_alpha=alpha,
+                    beta_beta=beta,
+                    boundary_mass=boundary_mass,
+                    one_given_boundary=one_given_boundary,
+                )
+    elif data.family == "positive":
+        mito_variance_by_image = np.asarray(posterior["mito_variance_by_image"], dtype=float)
+        conditional_median = positive_distribution_median(
+            mean=parent_mean,
+            variance=mito_variance_by_image[..., obs_image_idx],
+            likelihood_name=data.likelihood_name,
+        )
+        conditional_median = data.positive_offset + data.positive_scale * conditional_median
+    elif data.likelihood_name == "logitnormal":
+        image_logit_mean = np.asarray(posterior["image_logit_mean"], dtype=float)
+        conditional_median = expit(image_logit_mean[..., obs_image_idx])
+    elif data.likelihood_name == "logit_skew_normal":
+        image_logit_mean = np.asarray(posterior["image_logit_mean"], dtype=float)
+        mito_sigma_by_image = np.asarray(posterior["mito_sigma_by_image"], dtype=float)
+        conditional_median = logit_skew_normal_median(
+            logit_location=image_logit_mean[..., obs_image_idx],
+            sigma=mito_sigma_by_image[..., obs_image_idx],
+            alpha=np.asarray(posterior["skew_alpha"], dtype=float),
+        )
+    else:
+        kappa_mito_by_image = np.asarray(posterior["kappa_mito_by_image"], dtype=float)
+        obs_kappa = kappa_mito_by_image[..., obs_image_idx]
+        conditional_median = beta_median_from_mean_kappa(mean=parent_mean, kappa=obs_kappa)
+        if data.likelihood_name == "zero_one_inflated_beta":
+            clipped_mean = np.clip(parent_mean, SMALL_VALUE, 1.0 - SMALL_VALUE)
+            clipped_kappa = np.clip(obs_kappa, SMALL_VALUE, None)
+            alpha = np.clip(clipped_mean * clipped_kappa, SMALL_VALUE, None)
+            beta = np.clip((1.0 - clipped_mean) * clipped_kappa, SMALL_VALUE, None)
+            boundary_mass = np.asarray(posterior["boundary_mass"], dtype=float)[..., obs_genotype_idx]
+            one_given_boundary = np.asarray(posterior["one_given_boundary"], dtype=float)[
+                ...,
+                obs_genotype_idx,
+            ]
+            conditional_median = zero_one_inflated_beta_median(
+                beta_median=conditional_median,
+                beta_alpha=alpha,
+                beta_beta=beta,
+                boundary_mass=boundary_mass,
+                one_given_boundary=one_given_boundary,
+            )
+
+    wt_median = median_over_selected_units(conditional_median, wt_observations)
+    ko_median = median_over_selected_units(conditional_median, ko_observations)
+    return {
+        "wt_median": wt_median,
+        "ko_median": ko_median,
+        "genotype_median": np.stack([wt_median, ko_median], axis=-1),
+        "delta_median": ko_median - wt_median,
+    }
 
 
 def positive_response_scale_variance_components(
@@ -1947,6 +2199,17 @@ def attach_response_scale_posterior(
     draw_coords = posterior.coords["draw"]
 
     response_variables: dict[str, xr.DataArray] = {}
+    median_draws = genotype_response_median_draws(data=data, posterior=posterior)
+    genotype_median_response = xr.DataArray(
+        median_draws["genotype_median"],
+        dims=("chain", "draw", "genotype"),
+        coords={"chain": chain_coords, "draw": draw_coords, "genotype": genotype_coords},
+    )
+    delta_median_response = xr.DataArray(
+        median_draws["delta_median"],
+        dims=("chain", "draw"),
+        coords={"chain": chain_coords, "draw": draw_coords},
+    )
     if data.model_level == "image_summary":
         mean_scale = data.positive_scale if data.family in {"positive", "real"} else 1.0
         mean_offset = data.positive_offset if data.family == "real" else data.positive_offset
@@ -1964,6 +2227,8 @@ def attach_response_scale_posterior(
         response_variables = {
             "genotype_mean_response": genotype_mean_response,
             "delta_mean_response": delta_mean_response,
+            "genotype_median_response": genotype_median_response,
+            "delta_median_response": delta_median_response,
             "animal_variance_shared_response": xr.DataArray(
                 variance_draws["animal_variance_shared"],
                 dims=("chain", "draw"),
@@ -1987,6 +2252,8 @@ def attach_response_scale_posterior(
         response_variables = {
             "genotype_mean_response": mean_offset + posterior["genotype_mean"] * mean_scale,
             "delta_mean_response": posterior["delta_mean"] * mean_scale,
+            "genotype_median_response": genotype_median_response,
+            "delta_median_response": delta_median_response,
             "animal_variance_shared_response": xr.DataArray(
                 variance_draws["animal_variance_shared"],
                 dims=("chain", "draw"),
@@ -2034,6 +2301,8 @@ def attach_response_scale_posterior(
         response_variables = {
             "genotype_mean_response": genotype_mean_response,
             "delta_mean_response": posterior["delta_mean"],
+            "genotype_median_response": genotype_median_response,
+            "delta_median_response": delta_median_response,
             "animal_variance_shared_response": xr.DataArray(
                 variance_draws["animal_variance_shared"],
                 dims=("chain", "draw"),
@@ -2057,6 +2326,7 @@ def attach_response_scale_posterior(
     idata.attrs["muscle"] = data.muscle
     idata.attrs["metric"] = data.metric
     idata.attrs["family"] = data.family
+    idata.attrs["median_reporting"] = "response_quantile_v1"
     idata.attrs["likelihood_name"] = data.likelihood_name
     idata.attrs["analysis_id"] = data.analysis_id
     idata.attrs["model_level"] = data.model_level
@@ -2851,6 +3121,7 @@ def summarize_model(
     genotype_mean = flatten_draws(posterior["genotype_mean"])
     wt_mean = genotype_mean[:, 0]
     ko_mean = genotype_mean[:, 1]
+    median_draws = genotype_response_median_draws(data=data, posterior=posterior)
 
     if data.model_level == "image_summary":
         variance_draws = image_summary_variance_summaries(data, idata)
@@ -2886,9 +3157,12 @@ def summarize_model(
         "sampling_seconds": sampling_seconds,
         "wt_mean": float(mean_offset + np.median(wt_mean) * mean_scale),
         "ko_mean": float(mean_offset + np.median(ko_mean) * mean_scale),
+        "wt_median": float(np.median(median_draws["wt_median"])),
+        "ko_median": float(np.median(median_draws["ko_median"])),
         "animal_variance_shared": float(np.median(variance_draws["animal_variance_shared"])),
     }
     row.update(summarize_scalar((ko_mean - wt_mean) * mean_scale, "delta_mean"))
+    row.update(summarize_scalar(median_draws["delta_median"], "delta_median"))
     row.update(
         summarize_delta_mean_bayes_factor(
             data=data,
