@@ -2,6 +2,7 @@ from itertools import combinations
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.offsetbox import AnnotationBbox, HPacker, TextArea
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -12,17 +13,21 @@ BOX_PLOT_PALETTE = ["tab:blue", "tab:orange"]
 SUPERPLOT_GROUP_WIDTH = 1.0
 SUPERPLOT_HALF_WIDTH = 0.42
 SUPERPLOT_GRID_SIZE = 256
-SUPERPLOT_POINT_SIZE_MIN = 4
-SUPERPLOT_POINT_SIZE_MAX = 11
+SUPERPLOT_POINT_SIZE_MIN = 5
+SUPERPLOT_POINT_SIZE_MAX = 28
 SUPERPLOT_POINT_ALPHA = 0.4
 ROBUST_Y_LOWER_QUANTILE = 0.01
 ROBUST_Y_UPPER_QUANTILE = 0.99
-SUPERPLOT_TITLE_PAD = 34
-SUPERPLOT_LAYOUT_TOP = 0.97
-SUPERPLOT_ANNOTATION_BASE_Y = 1.02
+SUPERPLOT_TITLE_PAD = 54
+SUPERPLOT_LAYOUT_TOP = 0.92
+SUPERPLOT_ANNOTATION_BASE_Y = 1.0
 SUPERPLOT_ANNOTATION_BRACKET_HEIGHT = 0.025
 SUPERPLOT_ANNOTATION_TEXT_OFFSET = 0.008
-SUPERPLOT_ANNOTATION_STACK_GAP = 0.07
+SUPERPLOT_ANNOTATION_TEXT_LINE_GAP = 0.07
+SUPERPLOT_ANNOTATION_STACK_GAP = 0.09
+SUPERPLOT_ANNOTATION_FONT_SIZE = 12
+SUPERPLOT_ANNOTATION_HDI_FONT_SIZE = 10
+SUPERPLOT_ANNOTATION_HDI_COLOR = "0.35"
 CLUSTERING_METRICS = frozenset({"NND", "3NND", "5NND", "Voronoi_Cell_Area"})
 CENTER_IMAGE_REGION = "center"
 
@@ -469,20 +474,16 @@ def get_dynamic_beeswarm_point_size(group_count, max_group_count, metric_name):
     Returns:
         float: Marker area passed to Matplotlib ``scatter``.
     """
-    if metric_name == "Count":
-        point_size_min = 10
-        point_size_max = 22
-    else:
-        point_size_min = SUPERPLOT_POINT_SIZE_MIN
-        point_size_max = SUPERPLOT_POINT_SIZE_MAX
+    point_size_min = SUPERPLOT_POINT_SIZE_MIN
+    point_size_max = SUPERPLOT_POINT_SIZE_MAX
 
     if group_count <= 1 or max_group_count <= 1:
         return float(point_size_max)
 
+    sparse_count_scale = np.clip((np.log10(max(group_count, 1)) - 1.0) / 2.0, 0.0, 1.0)
     relative_density = np.sqrt(group_count / max_group_count)
-    marker_size = point_size_max - (
-        (point_size_max - point_size_min) * relative_density
-    )
+    density_scale = max(sparse_count_scale, 0.35 * relative_density)
+    marker_size = point_size_max - ((point_size_max - point_size_min) * density_scale)
     return float(np.clip(marker_size, point_size_min, point_size_max))
 
 
@@ -564,8 +565,138 @@ def normalize_superplot_annotations(superplot_annotations):
     return [
         {str(key): str(value) for key, value in record.items()}
         for record in superplot_annotations
-        if str(record.get("label", "")).strip()
+        if (
+            str(record.get("label", "")).strip()
+            or str(record.get("mean_label", "")).strip()
+            or str(record.get("median_label", "")).strip()
+        )
     ]
+
+
+def superplot_annotation_text_items(record):
+    """Return ordered annotation text labels and colors for one bracket.
+
+    Args:
+        record (dict[str, str]): Annotation record containing either a legacy ``label`` or
+            separate ``mean_label`` and ``median_label`` fields.
+
+    Returns:
+        list[tuple[str, str]]: Ordered `(label, color)` pairs drawn from bottom to top.
+    """
+
+    mean_label = str(record.get("mean_label", "")).strip()
+    median_label = str(record.get("median_label", "")).strip()
+    if mean_label or median_label:
+        items = []
+        if mean_label:
+            items.append((mean_label, str(record.get("mean_color", record.get("color", "black"))).strip() or "black"))
+        if median_label:
+            items.append(
+                (median_label, str(record.get("median_color", record.get("color", "black"))).strip() or "black")
+            )
+        return items
+    label = str(record.get("label", "")).strip()
+    if not label:
+        return []
+    return [(label, str(record.get("color", "black")).strip() or "black")]
+
+
+def split_effect_summary_annotation(label):
+    """Split an effect-summary label into estimate, HDI, and probability spans.
+
+    Args:
+        label (str): Annotation text such as ``-1.2 [-2.3, 0.1] 93.0%``.
+
+    Returns:
+        tuple[str, str, str] | None: Prefix, bracketed HDI, and suffix spans when the
+            label has effect-summary structure; otherwise ``None``.
+    """
+
+    text = str(label)
+    left_bracket = text.find("[")
+    right_bracket = text.find("]", left_bracket + 1)
+    if left_bracket < 0 or right_bracket < 0:
+        return None
+    prefix = text[:left_bracket].rstrip()
+    hdi_text = text[left_bracket : right_bracket + 1]
+    suffix = text[right_bracket + 1 :].lstrip()
+    if not prefix or not suffix:
+        return None
+    return prefix, hdi_text, suffix
+
+
+def draw_superplot_annotation_text(ax, x_center, y_position, label, text_color, transform):
+    """Draw one annotation line, styling bracketed HDI text when present.
+
+    Args:
+        ax (plt.Axes): Axes receiving the annotation text.
+        x_center (float): Horizontal center of the comparison bracket.
+        y_position (float): Vertical position in x-axis transform coordinates.
+        label (str): Annotation text to render.
+        text_color (str): Main text color.
+        transform (matplotlib.transforms.Transform): Coordinate transform for placement.
+
+    Returns:
+        None: The function adds a text artist directly to ``ax``.
+    """
+
+    effect_parts = split_effect_summary_annotation(label)
+    if effect_parts is None:
+        ax.text(
+            x_center,
+            y_position,
+            label,
+            ha="center",
+            va="bottom",
+            fontsize=SUPERPLOT_ANNOTATION_FONT_SIZE,
+            color=text_color,
+            transform=transform,
+            clip_on=False,
+            zorder=11,
+        )
+        return None
+
+    prefix, hdi_text, suffix = effect_parts
+    text_box = HPacker(
+        children=[
+            TextArea(
+                f"{prefix} ",
+                textprops={
+                    "fontsize": SUPERPLOT_ANNOTATION_FONT_SIZE,
+                    "color": text_color,
+                },
+            ),
+            TextArea(
+                hdi_text,
+                textprops={
+                    "fontsize": SUPERPLOT_ANNOTATION_HDI_FONT_SIZE,
+                    "color": SUPERPLOT_ANNOTATION_HDI_COLOR,
+                },
+            ),
+            TextArea(
+                f" {suffix}",
+                textprops={
+                    "fontsize": SUPERPLOT_ANNOTATION_FONT_SIZE,
+                    "color": text_color,
+                },
+            ),
+        ],
+        align="baseline",
+        pad=0,
+        sep=0,
+    )
+    annotation_box = AnnotationBbox(
+        text_box,
+        (x_center, y_position),
+        xycoords=transform,
+        box_alignment=(0.5, 0.0),
+        frameon=False,
+        pad=0,
+        annotation_clip=False,
+        zorder=11,
+    )
+    ax.add_artist(annotation_box)
+    return None
 
 
 def add_superplot_annotations(ax, annotation_records, group_centers, hue_order):
@@ -590,9 +721,10 @@ def add_superplot_annotations(ax, annotation_records, group_centers, hue_order):
 
     for record in annotation_records:
         x_value = str(record.get("x", ""))
-        label = str(record.get("label", "")).strip()
-        if not x_value or not label:
+        text_items = superplot_annotation_text_items(record)
+        if not x_value or not text_items:
             continue
+        bracket_color = str(record.get("bracket_color", "black")).strip() or "black"
 
         hue_start = str(record.get("hue_start", hue_order[0]))
         hue_end = str(record.get("hue_end", hue_order[1]))
@@ -614,24 +746,22 @@ def add_superplot_annotations(ax, annotation_records, group_centers, hue_order):
                 y_line + SUPERPLOT_ANNOTATION_BRACKET_HEIGHT,
                 y_line,
             ],
-            color="black",
+            color=bracket_color,
             linewidth=1.2,
             transform=xaxis_transform,
             clip_on=False,
             zorder=10,
         )
-        ax.text(
-            (x_start + x_end) / 2.0,
-            y_line + SUPERPLOT_ANNOTATION_BRACKET_HEIGHT + SUPERPLOT_ANNOTATION_TEXT_OFFSET,
-            label,
-            ha="center",
-            va="bottom",
-            fontsize=12,
-            color="black",
-            transform=xaxis_transform,
-            clip_on=False,
-            zorder=11,
-        )
+        y_text = y_line + SUPERPLOT_ANNOTATION_BRACKET_HEIGHT + SUPERPLOT_ANNOTATION_TEXT_OFFSET
+        for text_index, (text_label, text_color) in enumerate(text_items):
+            draw_superplot_annotation_text(
+                ax=ax,
+                x_center=(x_start + x_end) / 2.0,
+                y_position=y_text + SUPERPLOT_ANNOTATION_TEXT_LINE_GAP * text_index,
+                label=text_label,
+                text_color=text_color,
+                transform=xaxis_transform,
+            )
 
     return None
 

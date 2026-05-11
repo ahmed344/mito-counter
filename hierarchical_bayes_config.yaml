@@ -16,6 +16,8 @@ runtime:
   save_idata: true # Boolean. `true` saves NetCDF traces for later visualization; `false` skips trace writing.
   summary_update_mode: "merge" # Options: `merge` updates only rerun muscle/metric rows; `replace` overwrites the full summary CSV.
   visualization_refresh_mode: "rerun_missing_traces" # Options: `never`, `refit_first`, `rerun_missing_traces`.
+  superplot_annotation_mode: "effect_summary" # Options: `bayes_factor` for compact BF symbols, `effect_summary` for delta [HDI] pd labels.
+  retry_on_warnings: false # Boolean. `true` retries fits with sampler warnings; `false` keeps the first attempt even with divergences.
   retry_max_draws: 10000 # Integer >= 1. Upper cap for adaptive retry posterior draws per chain.
   retry_max_tune: 10000 # Integer >= 1. Upper cap for adaptive retry warmup draws per chain.
   retry_max_target_accept: 0.999 # Float in [0.8, 0.999]. Upper cap for adaptive retry NUTS target acceptance.
@@ -25,6 +27,7 @@ available_options:
   bounded_likelihoods: ["beta", "zero_one_inflated_beta", "logitnormal", "logit_skew_normal"] # Legal likelihoods for bounded metrics such as Circularity or Solidity.
   summary_update_modes: ["merge", "replace"] # Legal summary write behaviors.
   visualization_refresh_modes: ["never", "refit_first", "rerun_missing_traces"] # Legal figure-workflow refresh behaviors.
+  superplot_annotation_modes: ["bayes_factor", "effect_summary"] # Legal superplot annotation systems.
   repeat_options: [true, false] # `true` reruns and refreshes that fit; `false` leaves its current summary row untouched.
 
 fits:
@@ -93,8 +96,8 @@ fits:
     metric: "NND" # Metric column name from the measurements table.
     repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "gamma" # Positive metric option: `gamma` or `lognormal`; gamma remained the more stable choice for Soleus NND.
-    draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
-    tune: 1500 # Integer >= 1. Warmup draws per chain.
+    draws: 5000 # Integer >= 1. Posterior draws per chain after warmup.
+    tune: 7000 # Integer >= 1. Warmup draws per chain.
     chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
     target_accept: 0.99 # Float in [0.8, 0.999]. Higher values are safer for difficult NUTS geometries.
 
@@ -103,8 +106,8 @@ fits:
     metric: "3NND" # Clustering metric restricted to Image_Region == center by the analysis code.
     repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "gamma" # Positive metric option: `gamma` or `lognormal`; start from the stable Soleus NND choice.
-    draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
-    tune: 1500 # Integer >= 1. Warmup draws per chain.
+    draws: 5000 # Integer >= 1. Posterior draws per chain after warmup.
+    tune: 7000 # Integer >= 1. Warmup draws per chain.
     chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
     target_accept: 0.99 # Float in [0.8, 0.999]. Higher values are safer for difficult NUTS geometries.
 
@@ -113,8 +116,8 @@ fits:
     metric: "5NND" # Clustering metric restricted to Image_Region == center by the analysis code.
     repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "gamma" # Positive metric option: `gamma` or `lognormal`; start from the stable Soleus NND choice.
-    draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
-    tune: 1500 # Integer >= 1. Warmup draws per chain.
+    draws: 5000 # Integer >= 1. Posterior draws per chain after warmup.
+    tune: 7000 # Integer >= 1. Warmup draws per chain.
     chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
     target_accept: 0.99 # Float in [0.8, 0.999]. Higher values are safer for difficult NUTS geometries.
 
@@ -123,8 +126,8 @@ fits:
     metric: "Voronoi_Cell_Area" # Clustering metric restricted to Image_Region == center by the analysis code.
     repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; Voronoi areas are positive and typically right-skewed.
-    draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
-    tune: 1500 # Integer >= 1. Warmup draws per chain.
+    draws: 6000 # Integer >= 1. Posterior draws per chain after warmup.
+    tune: 6000 # Integer >= 1. Warmup draws per chain.
     chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
     target_accept: 0.99 # Float in [0.8, 0.999]. Higher values are safer for difficult NUTS geometries.
 
@@ -163,8 +166,8 @@ fits:
     metric: "Corrected_area" # Metric column name from the measurements table.
     repeat: true # Boolean. Set to `true` to recompute this fit, or `false` to keep its existing summary row and trace files untouched.
     likelihood: "lognormal" # Positive metric option: `gamma` or `lognormal`; lognormal gave a cleaner engine fit and lower density-L1 for TA Corrected_area.
-    draws: 1500 # Integer >= 1. Posterior draws per chain after warmup.
-    tune: 1500 # Integer >= 1. Warmup draws per chain.
+    draws: 3000 # Integer >= 1. Posterior draws per chain after warmup.
+    tune: 3000 # Integer >= 1. Warmup draws per chain.
     chains: 4 # Integer >= 1. Number of MCMC chains for this fit.
     target_accept: 0.99 # Float in [0.8, 0.999]. Higher values are safer for difficult NUTS geometries.
 

@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import yaml
 from scipy.stats import mannwhitneyu
 
 from stats_utils import filter_metric_region, maybe_show_current_figure, plot_metric_variants
@@ -59,7 +60,7 @@ metric_values_df = pd.DataFrame(
     }
 )
 
-# Count the zero values in each column
+# Summarize zero values in each column.
 metric_values_df.isin([0]).sum()
 
 # %% Plot histograms for all numeric metrics
@@ -67,23 +68,8 @@ metric_values_df.isin([0]).sum()
 metric_values_df.hist(figsize=(25, 8), bins=70, layout=(2, np.ceil(len(metrics) / 2).astype(int)))
 plt.savefig("/workspaces/mito-counter/data/Calpaine_3/results/figures/histograms.png", dpi=900)
 maybe_show_current_figure()
-# Count the zero values in each column
-
-# %% Build count table (objects per image)
-# Each row in df_counts is one image-level count used for count comparisons.
-df_counts = df.groupby(['Condition', 'Muscle', 'Block', 'image'], observed=True).size().reset_index(name='Count')
-df_counts
-
-# %% Sanity check the count table schema/types
-df_counts.info()
-
-# %% Explore count variation across blocks
-plt.figure(figsize=(20, 6))
-sns.boxplot(y="Count", x="Block", data=df_counts, hue="Muscle", gap=0.1)
-plt.savefig("/workspaces/mito-counter/data/Calpaine_3/results/figures/counts_by_block.png", dpi=900)
-maybe_show_current_figure()
-
 # %% Human-readable units for y-axis labels
+
 units = {
     "Area": "nm^2",
     "Corrected_area": "nm^2",
@@ -118,6 +104,12 @@ bayesian_summary_csv = Path("/workspaces/mito-counter/data/Calpaine_3/results/hi
 bayesian_image_summary_csv = Path(
     "/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics_image_summary.csv"
 )
+bayesian_config_yaml = Path("/workspaces/mito-counter/hierarchical_bayes_config.yaml")
+bayesian_image_summary_config_yaml = Path("/workspaces/mito-counter/hierarchical_bayes_image_summary_config.yaml")
+BAYES_MEAN_ANNOTATION_COLOR = "purple"
+BAYES_MEDIAN_ANNOTATION_COLOR = "tab:blue"
+BAYES_FACTOR_ANNOTATION_MODE = "bayes_factor"
+EFFECT_SUMMARY_ANNOTATION_MODE = "effect_summary"
 image_summary_metrics = [
     "Density",
     "Voronoi_Cell_Area_center_cv",
@@ -132,6 +124,27 @@ image_summary_metrics = [
     "3NND_center_mean",
     "Voronoi_Cell_Area_center_mean",
 ]
+
+
+def load_superplot_annotation_mode(config_yaml):
+    """Load the configured superplot annotation mode from a Bayesian YAML file.
+
+    Args:
+        config_yaml (Path): Path to a hierarchical Bayesian YAML configuration file.
+
+    Returns:
+        str: Annotation mode, defaulting to ``bayes_factor`` when unavailable.
+    """
+
+    if not config_yaml.exists():
+        return BAYES_FACTOR_ANNOTATION_MODE
+    with config_yaml.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+    runtime = dict(config.get("runtime", {})) if isinstance(config, dict) else {}
+    annotation_mode = str(runtime.get("superplot_annotation_mode", BAYES_FACTOR_ANNOTATION_MODE)).strip()
+    if annotation_mode not in {BAYES_FACTOR_ANNOTATION_MODE, EFFECT_SUMMARY_ANNOTATION_MODE}:
+        return BAYES_FACTOR_ANNOTATION_MODE
+    return annotation_mode
 
 
 def load_bayesian_superplot_annotations(summary_csv):
@@ -149,7 +162,6 @@ def load_bayesian_superplot_annotations(summary_csv):
         "muscle",
         "wt_label",
         "ko_label",
-        "delta_mean_bf_annotation",
     }
     if not summary_csv.exists():
         return pd.DataFrame(columns=sorted(required_columns))
@@ -161,12 +173,36 @@ def load_bayesian_superplot_annotations(summary_csv):
     return summary_df
 
 
-def bayesian_annotations_for_metric(summary_df, metric):
+def format_delta_effect_annotation(row, label):
+    """Format a Bayesian effect estimate, HDI, and probability of direction.
+
+    Args:
+        row (pd.Series): Bayesian summary row containing delta columns.
+        label (str): Delta column prefix, such as ``delta_mean`` or ``delta_median``.
+
+    Returns:
+        str: Compact effect annotation text, or an empty string when unavailable.
+    """
+
+    try:
+        estimate = float(row[label])
+        hdi_low = float(row[f"{label}_hdi_low"])
+        hdi_high = float(row[f"{label}_hdi_high"])
+        pd_value = float(row[f"{label}_pd"])
+    except (KeyError, TypeError, ValueError):
+        return ""
+    if not all(np.isfinite(value) for value in (estimate, hdi_low, hdi_high, pd_value)):
+        return ""
+    return f"{estimate:.4g} [{hdi_low:.4g}, {hdi_high:.4g}] {pd_value:.1f}%"
+
+
+def bayesian_annotations_for_metric(summary_df, metric, annotation_mode=BAYES_FACTOR_ANNOTATION_MODE):
     """Build per-muscle BF annotation records for one metric.
 
     Args:
         summary_df (pd.DataFrame): Bayesian summary table loaded from disk.
         metric (str): Metric name currently being plotted.
+        annotation_mode (str): Annotation system to use for superplots.
 
     Returns:
         list[dict[str, str]]: Annotation records consumed by the superplot helpers.
@@ -177,15 +213,39 @@ def bayesian_annotations_for_metric(summary_df, metric):
     metric_rows = summary_df.loc[summary_df["metric"].astype(str) == str(metric)]
     annotations = []
     for _, row in metric_rows.iterrows():
-        label = str(row.get("delta_mean_bf_annotation", "")).strip()
-        if not label or label.lower() == "nan":
+        if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE:
+            mean_label = format_delta_effect_annotation(row=row, label="delta_mean")
+            median_label = format_delta_effect_annotation(row=row, label="delta_median")
+        else:
+            mean_label = str(row.get("delta_mean_bf_annotation", "")).strip()
+            if mean_label.lower() == "nan":
+                mean_label = ""
+            median_label = str(row.get("delta_median_bf_annotation", "")).strip()
+            if median_label.lower() == "nan":
+                median_label = ""
+        if not mean_label and not median_label:
             continue
         annotations.append(
             {
                 "x": str(row["muscle"]),
-                "label": label,
                 "hue_start": str(row["wt_label"]),
                 "hue_end": str(row["ko_label"]),
+                "mean_label": (
+                    mean_label
+                    if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE
+                    else f"mean {mean_label}"
+                    if mean_label
+                    else ""
+                ),
+                "mean_color": BAYES_MEAN_ANNOTATION_COLOR,
+                "median_label": (
+                    median_label
+                    if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE
+                    else f"median {median_label}"
+                    if median_label
+                    else ""
+                ),
+                "median_color": BAYES_MEDIAN_ANNOTATION_COLOR,
             }
         )
     return annotations
@@ -195,15 +255,9 @@ bayesian_summary_df = load_bayesian_superplot_annotations(summary_csv=bayesian_s
 bayesian_image_summary_df = load_bayesian_superplot_annotations(
     summary_csv=bayesian_image_summary_csv
 )
-
-# Plot Counts (No units needed, or you can add "objects" if you like)
-plot_metric_variants(
-    data=df_counts,
-    x='Muscle',
-    y='Count',
-    hue='Condition',
-    block='Block',
-    save_dir=save_dir,
+bayesian_annotation_mode = load_superplot_annotation_mode(config_yaml=bayesian_config_yaml)
+bayesian_image_summary_annotation_mode = load_superplot_annotation_mode(
+    config_yaml=bayesian_image_summary_config_yaml
 )
 
 # Plot Morphological measurments with Units
@@ -221,6 +275,7 @@ for measurment in metrics:
             superplot_annotations=bayesian_annotations_for_metric(
                 summary_df=bayesian_summary_df,
                 metric=measurment,
+                annotation_mode=bayesian_annotation_mode,
             ),
         )
 
@@ -238,11 +293,12 @@ for measurment in image_summary_metrics:
             superplot_annotations=bayesian_annotations_for_metric(
                 summary_df=bayesian_image_summary_df,
                 metric=measurment,
+                annotation_mode=bayesian_image_summary_annotation_mode,
             ),
         )
 
 # %% Run statistical tests and export results
-# For each muscle, compare the two conditions for every measurement and for Count.
+# For each muscle, compare the two conditions for every measurement.
 
 # Determine the two conditions to compare
 if isinstance(df["Condition"].dtype, pd.CategoricalDtype):
@@ -294,28 +350,7 @@ for muscle in sorted(df["Muscle"].dropna().unique()):
             "p_value": p_value,
         })
 
-# Add count-based tests (per image object counts), matching the same output schema.
-for muscle in sorted(df_counts["Muscle"].dropna().unique()):
-    df_counts_muscle = df_counts[df_counts["Muscle"] == muscle]
-    count_group_a = df_counts_muscle[df_counts_muscle["Condition"] == conditions[0]]["Count"].dropna()
-    count_group_b = df_counts_muscle[df_counts_muscle["Condition"] == conditions[1]]["Count"].dropna()
-
-    if len(count_group_a) == 0 or len(count_group_b) == 0:
-        continue
-
-    count_u_stat, count_p_value = mannwhitneyu(count_group_a, count_group_b, alternative="two-sided")
-    results.append({
-        "Measurment": "Count",
-        "Muscle": muscle,
-        "Condition_A": conditions[0],
-        "Condition_B": conditions[1],
-        "N_A": len(count_group_a),
-        "N_B": len(count_group_b),
-        "U": count_u_stat,
-        "p_value": count_p_value,
-    })
-
-# Save one combined table containing both measurement and count test results.
+# Save one combined table containing measurement test results.
 results_df = pd.DataFrame(results).sort_values(["Measurment", "Muscle"])
 results_df.to_csv("/workspaces/mito-counter/data/Calpaine_3/results/statistics.csv", index=False)
 results_df

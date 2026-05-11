@@ -64,6 +64,10 @@ TRACE_HSPACE = 0.78
 TRACE_RANK_WSPACE = 0.28
 DEFAULT_HSPACE = 0.35
 DEFAULT_WSPACE = 0.22
+BAYES_MEAN_ANNOTATION_COLOR = "purple"
+BAYES_MEDIAN_ANNOTATION_COLOR = "tab:blue"
+BAYES_FACTOR_ANNOTATION_MODE = "bayes_factor"
+EFFECT_SUMMARY_ANNOTATION_MODE = "effect_summary"
 METRIC_UNITS = {
     "Area": "nm^2",
     "Corrected_area": "nm^2",
@@ -668,13 +672,16 @@ def superplot_title_text(row: pd.Series) -> str:
     title_lines = [fit_title(row)]
     delta_mean_summary = summary_text_or_empty(row.get("delta_mean_summary", ""))
     delta_median_summary = summary_text_or_empty(row.get("delta_median_summary", ""))
-    bf_summary = summary_text_or_empty(row.get("delta_mean_bf_summary", ""))
+    mean_bf_summary = summary_text_or_empty(row.get("delta_mean_bf_summary", ""))
+    median_bf_summary = summary_text_or_empty(row.get("delta_median_bf_summary", ""))
     if delta_mean_summary:
         title_lines.append(delta_mean_summary)
     if delta_median_summary:
         title_lines.append(delta_median_summary)
-    if bf_summary:
-        title_lines.append(bf_summary)
+    if mean_bf_summary:
+        title_lines.append(f"mean {mean_bf_summary}")
+    if median_bf_summary:
+        title_lines.append(f"median {median_bf_summary}")
     return "\n".join(title_lines)
 
 
@@ -1430,6 +1437,79 @@ def posterior_plot_specs(row: pd.Series) -> list[tuple[str, str, str, str]]:
     return specs
 
 
+def format_delta_effect_annotation(row: pd.Series, label: str) -> str:
+    """Format one delta estimate, interval, and probability for superplot annotation.
+
+    Args:
+        row (pd.Series): Summary row containing posterior effect columns.
+        label (str): Column prefix such as ``delta_mean`` or ``delta_median``.
+
+    Returns:
+        str: Compact annotation text, or an empty string when values are unavailable.
+    """
+
+    try:
+        estimate = float(row[label])
+        hdi_low = float(row[f"{label}_hdi_low"])
+        hdi_high = float(row[f"{label}_hdi_high"])
+        pd_value = float(row[f"{label}_pd"])
+    except (KeyError, TypeError, ValueError):
+        return ""
+    if not all(np.isfinite(value) for value in (estimate, hdi_low, hdi_high, pd_value)):
+        return ""
+    return f"{estimate:.4g} [{hdi_low:.4g}, {hdi_high:.4g}] {pd_value:.1f}%"
+
+
+def bayesian_superplot_annotations(
+    row: pd.Series,
+    annotation_mode: str = BAYES_FACTOR_ANNOTATION_MODE,
+) -> list[dict[str, str]]:
+    """Build colored mean and median BF annotations for Bayesian super violins.
+
+    Args:
+        row (pd.Series): Summary row describing one muscle-metric fit.
+        annotation_mode (str): Superplot annotation system to use.
+
+    Returns:
+        list[dict[str, str]]: Annotation records with mean below median for one fit.
+    """
+
+    base_record = {
+        "x": str(row["muscle"]),
+        "hue_start": str(row["wt_label"]),
+        "hue_end": str(row["ko_label"]),
+    }
+    if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE:
+        mean_label = format_delta_effect_annotation(row=row, label="delta_mean")
+        median_label = format_delta_effect_annotation(row=row, label="delta_median")
+    else:
+        mean_label = summary_text_or_empty(row.get("delta_mean_bf_annotation", ""))
+        median_label = summary_text_or_empty(row.get("delta_median_bf_annotation", ""))
+    if not mean_label and not median_label:
+        return []
+    return [
+        {
+            **base_record,
+            "mean_label": (
+                mean_label
+                if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE
+                else f"mean {mean_label}"
+                if mean_label
+                else ""
+            ),
+            "mean_color": BAYES_MEAN_ANNOTATION_COLOR,
+            "median_label": (
+                median_label
+                if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE
+                else f"median {median_label}"
+                if median_label
+                else ""
+            ),
+            "median_color": BAYES_MEDIAN_ANNOTATION_COLOR,
+        }
+    ]
+
+
 def plot_biology_posteriors(
     idata: az.InferenceData,
     row: pd.Series,
@@ -1482,6 +1562,7 @@ def plot_bayesian_superplots(
     row: pd.Series,
     output_dir: Path,
     output_prefix: str,
+    annotation_mode: str,
 ) -> None:
     """Generate observed-data superplots for one fit using the existing project style.
 
@@ -1490,6 +1571,7 @@ def plot_bayesian_superplots(
         row (pd.Series): Summary row describing the fit.
         output_dir (Path): Root directory where superplot outputs should be saved.
         output_prefix (str): Prefix prepended to generated superplot filenames.
+        annotation_mode (str): Superplot annotation system selected in the YAML config.
 
     Returns:
         None
@@ -1498,6 +1580,7 @@ def plot_bayesian_superplots(
     subset = measurements_df.loc[measurements_df["Muscle"] == row["muscle"]].copy()
     title_text = superplot_title_text(row)
     fit_dir = output_dir
+    annotation_records = bayesian_superplot_annotations(row=row, annotation_mode=annotation_mode)
     plot_super_violin(
         data=subset,
         x="Muscle",
@@ -1508,6 +1591,7 @@ def plot_bayesian_superplots(
         save_dir=fit_dir,
         title_override=title_text,
         filename_prefix=output_prefix,
+        superplot_annotations=annotation_records,
     )
     plot_super_beeswarm(
         data=subset,
@@ -1519,6 +1603,7 @@ def plot_bayesian_superplots(
         save_dir=fit_dir,
         title_override=title_text,
         filename_prefix=output_prefix,
+        superplot_annotations=annotation_records,
     )
 
 
@@ -1528,6 +1613,7 @@ def generate_fit_visualizations(
     prepared: PreparedMetricData,
     measurements_df: pd.DataFrame,
     figure_root: Path,
+    annotation_mode: str,
 ) -> None:
     """Generate every requested visualization for one muscle-metric fit.
 
@@ -1537,6 +1623,7 @@ def generate_fit_visualizations(
         prepared (PreparedMetricData): Prepared metric-specific arrays matching the fit.
         measurements_df (pd.DataFrame): Full cleaned measurements table.
         figure_root (Path): Root figure directory for the visualization workflow.
+        annotation_mode (str): Superplot annotation system selected in the YAML config.
 
     Returns:
         None
@@ -1586,6 +1673,7 @@ def generate_fit_visualizations(
         row=row,
         output_dir=superplot_dir,
         output_prefix=output_prefix,
+        annotation_mode=annotation_mode,
     )
 
 
@@ -1649,6 +1737,7 @@ def run_visualization_analysis(
             prepared=prepared,
             measurements_df=measurements_df,
             figure_root=config.paths.figure_root,
+            annotation_mode=config.runtime.superplot_annotation_mode,
         )
 
 

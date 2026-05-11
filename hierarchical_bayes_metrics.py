@@ -22,7 +22,7 @@ import xarray as xr
 from scipy.special import expit
 from scipy.stats import beta as beta_distribution
 from scipy.stats import gamma as gamma_distribution
-from scipy.stats import gaussian_kde, norm, skewnorm, wasserstein_distance
+from scipy.stats import gaussian_kde, jf_skew_t, norm, skewnorm, t as student_t_distribution, wasserstein_distance
 
 from hierarchical_bayes_config import (
     BayesAnalysisConfig,
@@ -43,7 +43,7 @@ DEFAULT_POSITIVE_LIKELIHOOD = "gamma"
 DEFAULT_BOUNDED_LIKELIHOOD = "auto"
 POSITIVE_LIKELIHOODS = ("gamma", "lognormal")
 BOUNDED_LIKELIHOODS = ("auto", "beta", "zero_one_inflated_beta", "logitnormal", "logit_skew_normal")
-REAL_LIKELIHOODS = ("normal",)
+REAL_LIKELIHOODS = ("normal", "student_t", "skew_normal", "skew_student_t")
 
 POSITIVE_METRICS = (
     "Area",
@@ -253,13 +253,18 @@ def diagnostic_var_names(
                 "delta_image_variance",
             ]
         if family == "real":
-            return [
+            names = [
                 "genotype_mean",
                 "animal_sigma",
                 "image_sigma",
                 "delta_mean",
                 "delta_image_variance",
             ]
+            if likelihood_name in ("student_t", "skew_student_t"):
+                names.append("student_t_nu")
+            if likelihood_name in ("skew_normal", "skew_student_t"):
+                names.append("skew_alpha")
+            return names
         if likelihood_name in ("logitnormal", "logit_skew_normal"):
             names = [
                 "genotype_mean",
@@ -1004,6 +1009,42 @@ def median_over_selected_units(values: np.ndarray, mask: np.ndarray) -> np.ndarr
     return np.median(np.asarray(values, dtype=float)[..., selected_mask], axis=-1)
 
 
+def weighted_median_over_selected_units(
+    values: np.ndarray,
+    mask: np.ndarray,
+    weights: np.ndarray,
+) -> np.ndarray:
+    """Compute draw-aligned weighted medians over selected units on the last axis.
+
+    Args:
+        values (np.ndarray): Array whose last axis indexes units such as images.
+        mask (np.ndarray): Boolean mask selecting units for the weighted median.
+        weights (np.ndarray): Nonnegative weights aligned to the last axis of `values`.
+
+    Returns:
+        np.ndarray: Weighted median over selected units for each posterior draw.
+    """
+
+    selected_mask = np.asarray(mask, dtype=bool)
+    if not np.any(selected_mask):
+        raise ValueError("Expected at least one selected unit when computing weighted posterior medians.")
+    selected_values = np.asarray(values, dtype=float)[..., selected_mask]
+    selected_weights = np.asarray(weights, dtype=float)[selected_mask]
+    if np.sum(selected_weights) <= 0.0:
+        raise ValueError("Expected positive selected weights when computing weighted posterior medians.")
+    sorter = np.argsort(selected_values, axis=-1)
+    sorted_values = np.take_along_axis(selected_values, sorter, axis=-1)
+    sorted_weights = np.take_along_axis(
+        np.broadcast_to(selected_weights, selected_values.shape),
+        sorter,
+        axis=-1,
+    )
+    cumulative_weights = np.cumsum(sorted_weights, axis=-1)
+    cutoff = 0.5 * np.sum(selected_weights)
+    median_indices = np.argmax(cumulative_weights >= cutoff, axis=-1)
+    return np.take_along_axis(sorted_values, np.expand_dims(median_indices, axis=-1), axis=-1)[..., 0]
+
+
 def beta_median_from_mean_kappa(mean: np.ndarray, kappa: np.ndarray) -> np.ndarray:
     """Compute Beta distribution medians from mean and concentration arrays.
 
@@ -1132,49 +1173,74 @@ def genotype_response_median_draws(
         dict[str, np.ndarray]: Draw-aligned genotype medians and ``KO - WT`` median deltas.
     """
 
-    obs_image_idx = data.image_idx_obs
-    obs_genotype_idx = data.genotype_idx_obs
-    wt_observations = obs_genotype_idx == 0
-    ko_observations = obs_genotype_idx == 1
+    image_genotype_idx = data.genotype_idx_image
+    image_observation_weights = np.bincount(data.image_idx_obs, minlength=len(image_genotype_idx))
+    wt_images = image_genotype_idx == 0
+    ko_images = image_genotype_idx == 1
     image_mean = np.asarray(posterior["image_mean"], dtype=float)
-    parent_mean = image_mean[..., obs_image_idx]
+    parent_mean = image_mean
 
     if data.model_level == "image_summary":
         if data.family == "positive":
             image_variance = np.asarray(posterior["image_variance"], dtype=float)
-            obs_variance = image_variance[..., obs_genotype_idx]
+            image_level_variance = image_variance[..., image_genotype_idx]
             conditional_median = positive_distribution_median(
                 mean=parent_mean,
-                variance=obs_variance,
+                variance=image_level_variance,
                 likelihood_name=data.likelihood_name,
             )
             conditional_median = data.positive_offset + data.positive_scale * conditional_median
         elif data.family == "real":
-            conditional_median = data.positive_offset + data.positive_scale * parent_mean
+            if data.likelihood_name == "skew_normal":
+                image_sigma = np.asarray(posterior["image_sigma"], dtype=float)
+                skew_alpha = np.asarray(posterior["skew_alpha"], dtype=float)
+                conditional_median = skewnorm.ppf(
+                    0.5,
+                    a=skew_alpha[..., image_genotype_idx],
+                    loc=parent_mean,
+                    scale=image_sigma[..., image_genotype_idx],
+                )
+            elif data.likelihood_name == "skew_student_t":
+                image_sigma = np.asarray(posterior["image_sigma"], dtype=float)
+                skew_alpha = np.asarray(posterior["skew_alpha"], dtype=float)
+                student_t_nu = np.asarray(posterior["student_t_nu"], dtype=float)
+                skew_probability = expit(skew_alpha)
+                skew_student_t_a = 1.0 + student_t_nu * skew_probability
+                skew_student_t_b = 1.0 + student_t_nu * (1.0 - skew_probability)
+                conditional_median = jf_skew_t.ppf(
+                    0.5,
+                    a=skew_student_t_a[..., image_genotype_idx],
+                    b=skew_student_t_b[..., image_genotype_idx],
+                    loc=parent_mean,
+                    scale=image_sigma[..., image_genotype_idx],
+                )
+            else:
+                conditional_median = parent_mean
+            conditional_median = data.positive_offset + data.positive_scale * conditional_median
         elif data.likelihood_name == "logitnormal":
             image_logit_mean = np.asarray(posterior["image_logit_mean"], dtype=float)
-            conditional_median = expit(image_logit_mean[..., obs_image_idx])
+            conditional_median = expit(image_logit_mean)
         elif data.likelihood_name == "logit_skew_normal":
             image_logit_mean = np.asarray(posterior["image_logit_mean"], dtype=float)
             image_sigma = np.asarray(posterior["image_sigma"], dtype=float)
             conditional_median = logit_skew_normal_median(
-                logit_location=image_logit_mean[..., obs_image_idx],
-                sigma=image_sigma[..., obs_genotype_idx],
+                logit_location=image_logit_mean,
+                sigma=image_sigma[..., image_genotype_idx],
                 alpha=np.asarray(posterior["skew_alpha"], dtype=float),
             )
         else:
             kappa_image = np.asarray(posterior["kappa_image"], dtype=float)
-            obs_kappa = kappa_image[..., obs_genotype_idx]
-            conditional_median = beta_median_from_mean_kappa(mean=parent_mean, kappa=obs_kappa)
+            image_level_kappa = kappa_image[..., image_genotype_idx]
+            conditional_median = beta_median_from_mean_kappa(mean=parent_mean, kappa=image_level_kappa)
             if data.likelihood_name == "zero_one_inflated_beta":
                 clipped_mean = np.clip(parent_mean, SMALL_VALUE, 1.0 - SMALL_VALUE)
-                clipped_kappa = np.clip(obs_kappa, SMALL_VALUE, None)
+                clipped_kappa = np.clip(image_level_kappa, SMALL_VALUE, None)
                 alpha = np.clip(clipped_mean * clipped_kappa, SMALL_VALUE, None)
                 beta = np.clip((1.0 - clipped_mean) * clipped_kappa, SMALL_VALUE, None)
-                boundary_mass = np.asarray(posterior["boundary_mass"], dtype=float)[..., obs_genotype_idx]
+                boundary_mass = np.asarray(posterior["boundary_mass"], dtype=float)[..., image_genotype_idx]
                 one_given_boundary = np.asarray(posterior["one_given_boundary"], dtype=float)[
                     ...,
-                    obs_genotype_idx,
+                    image_genotype_idx,
                 ]
                 conditional_median = zero_one_inflated_beta_median(
                     beta_median=conditional_median,
@@ -1187,34 +1253,33 @@ def genotype_response_median_draws(
         mito_variance_by_image = np.asarray(posterior["mito_variance_by_image"], dtype=float)
         conditional_median = positive_distribution_median(
             mean=parent_mean,
-            variance=mito_variance_by_image[..., obs_image_idx],
+            variance=mito_variance_by_image,
             likelihood_name=data.likelihood_name,
         )
         conditional_median = data.positive_offset + data.positive_scale * conditional_median
     elif data.likelihood_name == "logitnormal":
         image_logit_mean = np.asarray(posterior["image_logit_mean"], dtype=float)
-        conditional_median = expit(image_logit_mean[..., obs_image_idx])
+        conditional_median = expit(image_logit_mean)
     elif data.likelihood_name == "logit_skew_normal":
         image_logit_mean = np.asarray(posterior["image_logit_mean"], dtype=float)
         mito_sigma_by_image = np.asarray(posterior["mito_sigma_by_image"], dtype=float)
         conditional_median = logit_skew_normal_median(
-            logit_location=image_logit_mean[..., obs_image_idx],
-            sigma=mito_sigma_by_image[..., obs_image_idx],
+            logit_location=image_logit_mean,
+            sigma=mito_sigma_by_image,
             alpha=np.asarray(posterior["skew_alpha"], dtype=float),
         )
     else:
         kappa_mito_by_image = np.asarray(posterior["kappa_mito_by_image"], dtype=float)
-        obs_kappa = kappa_mito_by_image[..., obs_image_idx]
-        conditional_median = beta_median_from_mean_kappa(mean=parent_mean, kappa=obs_kappa)
+        conditional_median = beta_median_from_mean_kappa(mean=parent_mean, kappa=kappa_mito_by_image)
         if data.likelihood_name == "zero_one_inflated_beta":
             clipped_mean = np.clip(parent_mean, SMALL_VALUE, 1.0 - SMALL_VALUE)
-            clipped_kappa = np.clip(obs_kappa, SMALL_VALUE, None)
+            clipped_kappa = np.clip(kappa_mito_by_image, SMALL_VALUE, None)
             alpha = np.clip(clipped_mean * clipped_kappa, SMALL_VALUE, None)
             beta = np.clip((1.0 - clipped_mean) * clipped_kappa, SMALL_VALUE, None)
-            boundary_mass = np.asarray(posterior["boundary_mass"], dtype=float)[..., obs_genotype_idx]
+            boundary_mass = np.asarray(posterior["boundary_mass"], dtype=float)[..., image_genotype_idx]
             one_given_boundary = np.asarray(posterior["one_given_boundary"], dtype=float)[
                 ...,
-                obs_genotype_idx,
+                image_genotype_idx,
             ]
             conditional_median = zero_one_inflated_beta_median(
                 beta_median=conditional_median,
@@ -1224,8 +1289,8 @@ def genotype_response_median_draws(
                 one_given_boundary=one_given_boundary,
             )
 
-    wt_median = median_over_selected_units(conditional_median, wt_observations)
-    ko_median = median_over_selected_units(conditional_median, ko_observations)
+    wt_median = weighted_median_over_selected_units(conditional_median, wt_images, image_observation_weights)
+    ko_median = weighted_median_over_selected_units(conditional_median, ko_images, image_observation_weights)
     return {
         "wt_median": wt_median,
         "ko_median": ko_median,
@@ -1467,8 +1532,30 @@ def image_summary_response_scale_variance_components(
         variance_scale = data.positive_scale**2
         image_sigma = np.asarray(posterior["image_sigma"], dtype=float)
         animal_sigma = np.asarray(posterior["animal_sigma"], dtype=float)
-        wt_image_variance = variance_scale * np.square(image_sigma[..., 0])
-        ko_image_variance = variance_scale * np.square(image_sigma[..., 1])
+        likelihood_variance = np.square(image_sigma)
+        if data.likelihood_name in ("student_t", "skew_student_t"):
+            student_t_nu = np.asarray(posterior["student_t_nu"], dtype=float)
+            likelihood_variance = likelihood_variance * student_t_nu / np.clip(
+                student_t_nu - 2.0,
+                SMALL_VALUE,
+                None,
+            )
+        if data.likelihood_name == "skew_normal":
+            skew_alpha = np.asarray(posterior["skew_alpha"], dtype=float)
+            skew_delta = skew_alpha / np.sqrt(1.0 + np.square(skew_alpha))
+            likelihood_variance = likelihood_variance * (1.0 - (2.0 * np.square(skew_delta) / np.pi))
+        if data.likelihood_name == "skew_student_t":
+            skew_alpha = np.asarray(posterior["skew_alpha"], dtype=float)
+            student_t_nu = np.asarray(posterior["student_t_nu"], dtype=float)
+            skew_probability = expit(skew_alpha)
+            skew_student_t_a = 1.0 + student_t_nu * skew_probability
+            skew_student_t_b = 1.0 + student_t_nu * (1.0 - skew_probability)
+            likelihood_variance = np.square(image_sigma) * np.asarray(
+                jf_skew_t.var(a=skew_student_t_a, b=skew_student_t_b),
+                dtype=float,
+            )
+        wt_image_variance = variance_scale * likelihood_variance[..., 0]
+        ko_image_variance = variance_scale * likelihood_variance[..., 1]
         return {
             "wt_image_variance": wt_image_variance,
             "ko_image_variance": ko_image_variance,
@@ -2036,7 +2123,7 @@ def build_image_summary_bounded_model(data: PreparedMetricData) -> pm.Model:
 
 
 def build_image_summary_real_model(data: PreparedMetricData) -> pm.Model:
-    """Construct a three-level Normal hierarchy for signed image-summary metrics.
+    """Construct a non-centered hierarchy for signed image-summary metrics.
 
     Args:
         data (PreparedMetricData): Prepared image-summary metric arrays and labels.
@@ -2057,23 +2144,82 @@ def build_image_summary_real_model(data: PreparedMetricData) -> pm.Model:
         genotype_mean = pm.Normal("genotype_mean", mu=data.pooled_median, sigma=prior_sigma, dims="genotype")
         animal_sigma = pm.HalfNormal("animal_sigma", sigma=prior_sigma)
         image_sigma = pm.HalfNormal("image_sigma", sigma=prior_sigma, dims="genotype")
-        animal_mean = pm.Normal(
+        animal_offset = pm.Normal("animal_offset", mu=0.0, sigma=1.0, dims="animal")
+        animal_mean = pm.Deterministic(
             "animal_mean",
-            mu=genotype_mean[genotype_idx_animal],
-            sigma=animal_sigma,
+            genotype_mean[genotype_idx_animal] + animal_offset * animal_sigma,
             dims="animal",
         )
         image_mean = pm.Deterministic("image_mean", animal_mean[animal_idx_image], dims="image")
-        pm.Normal(
-            "observed_metric",
-            mu=animal_mean[animal_idx_obs],
-            sigma=image_sigma[genotype_idx_obs],
-            observed=data.y,
-            dims="obs_id",
-        )
+        observed_mean = animal_mean[animal_idx_obs]
+        observed_sigma = image_sigma[genotype_idx_obs]
+        image_variance = pt.square(image_sigma)
+
+        if data.likelihood_name in ("student_t", "skew_student_t"):
+            nu_minus_two = pm.Exponential("nu_minus_two", lam=1.0 / 10.0, dims="genotype")
+            student_t_nu = pm.Deterministic("student_t_nu", nu_minus_two + 2.0, dims="genotype")
+            observed_nu = student_t_nu[genotype_idx_obs]
+            image_variance = image_variance * student_t_nu / (student_t_nu - 2.0)
+        if data.likelihood_name in ("skew_normal", "skew_student_t"):
+            skew_alpha = pm.Normal("skew_alpha", mu=0.0, sigma=3.0, dims="genotype")
+            observed_skew_alpha = skew_alpha[genotype_idx_obs]
+        if data.likelihood_name == "skew_normal":
+            skew_delta = skew_alpha / pt.sqrt(1.0 + pt.square(skew_alpha))
+            image_variance = pt.square(image_sigma) * (1.0 - (2.0 * pt.square(skew_delta) / np.pi))
+        if data.likelihood_name == "skew_student_t":
+            skew_probability = pm.math.sigmoid(skew_alpha)
+            skew_student_t_a = pm.Deterministic(
+                "skew_student_t_a",
+                1.0 + student_t_nu * skew_probability,
+                dims="genotype",
+            )
+            skew_student_t_b = pm.Deterministic(
+                "skew_student_t_b",
+                1.0 + student_t_nu * (1.0 - skew_probability),
+                dims="genotype",
+            )
+
+        if data.likelihood_name == "normal":
+            pm.Normal(
+                "observed_metric",
+                mu=observed_mean,
+                sigma=observed_sigma,
+                observed=data.y,
+                dims="obs_id",
+            )
+        elif data.likelihood_name == "student_t":
+            pm.StudentT(
+                "observed_metric",
+                nu=observed_nu,
+                mu=observed_mean,
+                sigma=observed_sigma,
+                observed=data.y,
+                dims="obs_id",
+            )
+        elif data.likelihood_name == "skew_normal":
+            pm.SkewNormal(
+                "observed_metric",
+                alpha=observed_skew_alpha,
+                mu=observed_mean,
+                sigma=observed_sigma,
+                observed=data.y,
+                dims="obs_id",
+            )
+        elif data.likelihood_name == "skew_student_t":
+            pm.SkewStudentT(
+                "observed_metric",
+                a=skew_student_t_a[genotype_idx_obs],
+                b=skew_student_t_b[genotype_idx_obs],
+                mu=observed_mean,
+                sigma=observed_sigma,
+                observed=data.y,
+                dims="obs_id",
+            )
+        else:
+            raise ValueError(f"Unsupported real-valued likelihood: {data.likelihood_name}")
 
         pm.Deterministic("delta_mean", genotype_mean[1] - genotype_mean[0])
-        pm.Deterministic("delta_image_variance", pt.square(image_sigma[1]) - pt.square(image_sigma[0]))
+        pm.Deterministic("delta_image_variance", image_variance[1] - image_variance[0])
 
     return model
 
@@ -2435,7 +2581,7 @@ def unavailable_scalar_summary(label: str) -> dict[str, float | str]:
 
 
 def empty_bayes_factor_summary() -> dict[str, float | str]:
-    """Return placeholder columns for delta-mean Bayes-factor outputs.
+    """Return placeholder columns for delta mean and median Bayes-factor outputs.
 
     Args:
         None
@@ -2451,6 +2597,12 @@ def empty_bayes_factor_summary() -> dict[str, float | str]:
         "delta_mean_posterior_density_at_null": float("nan"),
         "delta_mean_bf_annotation": "",
         "delta_mean_bf_summary": "",
+        "delta_median_bf10": float("nan"),
+        "delta_median_log_bf10": float("nan"),
+        "delta_median_prior_density_at_null": float("nan"),
+        "delta_median_posterior_density_at_null": float("nan"),
+        "delta_median_bf_annotation": "",
+        "delta_median_bf_summary": "",
     }
 
 
@@ -2528,6 +2680,37 @@ def density_at_point(draws: np.ndarray, point: float) -> float:
     return max(density, SAVAGE_DICKEY_MIN_DENSITY)
 
 
+def summarize_bayes_factor_from_draws(
+    posterior_draws: np.ndarray,
+    prior_draws: np.ndarray,
+    label: str,
+) -> dict[str, float | str]:
+    """Compute Savage-Dickey Bayes-factor columns from prior and posterior draws.
+
+    Args:
+        posterior_draws (np.ndarray): Posterior draws for one scalar delta quantity.
+        prior_draws (np.ndarray): Prior draws for the same scalar delta quantity.
+        label (str): Column prefix used in the output dataframe.
+
+    Returns:
+        dict[str, float | str]: BF values, densities, compact annotation, and summary text.
+    """
+
+    prior_density = density_at_point(draws=prior_draws, point=SAVAGE_DICKEY_NULL_VALUE)
+    posterior_density = density_at_point(draws=posterior_draws, point=SAVAGE_DICKEY_NULL_VALUE)
+    log_bf10 = float(np.log(prior_density) - np.log(posterior_density))
+    bf10 = float(np.exp(log_bf10))
+    annotation = format_bayes_factor_annotation(bf10=bf10)
+    return {
+        f"{label}_bf10": bf10,
+        f"{label}_log_bf10": log_bf10,
+        f"{label}_prior_density_at_null": prior_density,
+        f"{label}_posterior_density_at_null": posterior_density,
+        f"{label}_bf_annotation": annotation,
+        f"{label}_bf_summary": f"BF10={format_bayes_factor_value(bf10)} {annotation}".strip(),
+    }
+
+
 def delta_mean_response_draws_from_posterior(
     data: PreparedMetricData,
     idata: az.InferenceData,
@@ -2546,6 +2729,26 @@ def delta_mean_response_draws_from_posterior(
     if data.family in {"positive", "real"}:
         return delta_mean * data.positive_scale
     return delta_mean
+
+
+def delta_median_response_draws_from_posterior(
+    data: PreparedMetricData,
+    idata: az.InferenceData,
+) -> np.ndarray:
+    """Extract response-scale WT-vs-KO median-difference draws from the posterior.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        idata (az.InferenceData): Posterior inference data for one fitted model.
+
+    Returns:
+        np.ndarray: Flattened response-scale posterior median-delta draws for `KO - WT`.
+    """
+
+    if "delta_median_response" in idata.posterior.data_vars:
+        return flatten_draws(idata.posterior["delta_median_response"]).reshape(-1)
+    median_draws = genotype_response_median_draws(data=data, posterior=idata.posterior)
+    return np.asarray(median_draws["delta_median"], dtype=float).reshape(-1)
 
 
 def sample_prior_delta_mean_response_draws(
@@ -2578,6 +2781,73 @@ def sample_prior_delta_mean_response_draws(
     return delta_mean
 
 
+def prior_median_var_names(data: PreparedMetricData) -> list[str]:
+    """Return prior variables needed to derive genotype median deltas.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+
+    Returns:
+        list[str]: Variable names to request from PyMC prior predictive sampling.
+    """
+
+    names = ["image_mean"]
+    if data.model_level == "image_summary":
+        if data.family == "positive":
+            return names + ["image_variance"]
+        if data.family == "real":
+            if data.likelihood_name == "skew_normal":
+                return names + ["image_sigma", "skew_alpha"]
+            if data.likelihood_name == "skew_student_t":
+                return names + ["image_sigma", "skew_alpha", "student_t_nu"]
+            return names
+        if data.likelihood_name == "logitnormal":
+            return names + ["image_logit_mean"]
+        if data.likelihood_name == "logit_skew_normal":
+            return names + ["image_logit_mean", "image_sigma", "skew_alpha"]
+        names.append("kappa_image")
+    elif data.family == "positive":
+        names.append("mito_variance_by_image")
+    elif data.likelihood_name == "logitnormal":
+        names.append("image_logit_mean")
+    elif data.likelihood_name == "logit_skew_normal":
+        names.extend(["image_logit_mean", "mito_sigma_by_image", "skew_alpha"])
+    else:
+        names.append("kappa_mito_by_image")
+
+    if data.likelihood_name == "zero_one_inflated_beta":
+        names.extend(["boundary_mass", "one_given_boundary"])
+    return names
+
+
+def sample_prior_delta_median_response_draws(
+    data: PreparedMetricData,
+    sample_count: int,
+    random_seed: int,
+) -> np.ndarray:
+    """Sample response-scale WT-vs-KO median-difference draws from the prior.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        sample_count (int): Number of prior draws to simulate.
+        random_seed (int): Random seed used for reproducible prior sampling.
+
+    Returns:
+        np.ndarray: Flattened response-scale prior median-delta draws for `KO - WT`.
+    """
+
+    model = build_model(data)
+    with model:
+        prior_draws = pm.sample_prior_predictive(
+            samples=sample_count,
+            var_names=prior_median_var_names(data),
+            random_seed=random_seed,
+            return_inferencedata=False,
+        )
+    median_draws = genotype_response_median_draws(data=data, posterior=prior_draws)
+    return np.asarray(median_draws["delta_median"], dtype=float).reshape(-1)
+
+
 def summarize_delta_mean_bayes_factor(
     data: PreparedMetricData,
     idata: az.InferenceData,
@@ -2601,19 +2871,41 @@ def summarize_delta_mean_bayes_factor(
         sample_count=prior_draw_count,
         random_seed=random_seed,
     )
-    prior_density = density_at_point(draws=prior_draws, point=SAVAGE_DICKEY_NULL_VALUE)
-    posterior_density = density_at_point(draws=posterior_draws, point=SAVAGE_DICKEY_NULL_VALUE)
-    log_bf10 = float(np.log(prior_density) - np.log(posterior_density))
-    bf10 = float(np.exp(log_bf10))
-    annotation = format_bayes_factor_annotation(bf10=bf10)
-    return {
-        "delta_mean_bf10": bf10,
-        "delta_mean_log_bf10": log_bf10,
-        "delta_mean_prior_density_at_null": prior_density,
-        "delta_mean_posterior_density_at_null": posterior_density,
-        "delta_mean_bf_annotation": annotation,
-        "delta_mean_bf_summary": f"BF10={format_bayes_factor_value(bf10)} {annotation}".strip(),
-    }
+    return summarize_bayes_factor_from_draws(
+        posterior_draws=posterior_draws,
+        prior_draws=prior_draws,
+        label="delta_mean",
+    )
+
+
+def summarize_delta_median_bayes_factor(
+    data: PreparedMetricData,
+    idata: az.InferenceData,
+    random_seed: int,
+) -> dict[str, float | str]:
+    """Compute Savage-Dickey Bayes-factor summaries for the WT-vs-KO median delta.
+
+    Args:
+        data (PreparedMetricData): Prepared metric-specific arrays and labels.
+        idata (az.InferenceData): Posterior inference data for one fitted model.
+        random_seed (int): Random seed used for reproducible prior sampling.
+
+    Returns:
+        dict[str, float | str]: BF values, densities, compact annotation, and summary text.
+    """
+
+    posterior_draws = delta_median_response_draws_from_posterior(data=data, idata=idata)
+    prior_draw_count = max(SAVAGE_DICKEY_MIN_PRIOR_DRAWS, posterior_draws.size)
+    prior_draws = sample_prior_delta_median_response_draws(
+        data=data,
+        sample_count=prior_draw_count,
+        random_seed=random_seed,
+    )
+    return summarize_bayes_factor_from_draws(
+        posterior_draws=posterior_draws,
+        prior_draws=prior_draws,
+        label="delta_median",
+    )
 
 
 def gamma_variance_summaries(data: PreparedMetricData, idata: az.InferenceData) -> dict[str, np.ndarray]:
@@ -2854,7 +3146,38 @@ def simulate_predictive_subset(
         if data.family == "real":
             image_sigma = flatten_draws(idata.posterior["image_sigma"])[draw_indices]
             obs_sigma = image_sigma[:, obs_genotype_idx]
-            standardized = rng.normal(loc=parent_mean, scale=obs_sigma)
+            if data.likelihood_name == "student_t":
+                student_t_nu = flatten_draws(idata.posterior["student_t_nu"])[draw_indices]
+                obs_nu = student_t_nu[:, obs_genotype_idx]
+                standardized = student_t_distribution.rvs(
+                    df=obs_nu,
+                    loc=parent_mean,
+                    scale=obs_sigma,
+                    random_state=rng,
+                )
+            elif data.likelihood_name == "skew_normal":
+                skew_alpha = flatten_draws(idata.posterior["skew_alpha"])[draw_indices]
+                standardized = skewnorm.rvs(
+                    a=skew_alpha[:, obs_genotype_idx],
+                    loc=parent_mean,
+                    scale=obs_sigma,
+                    random_state=rng,
+                )
+            elif data.likelihood_name == "skew_student_t":
+                skew_alpha = flatten_draws(idata.posterior["skew_alpha"])[draw_indices]
+                student_t_nu = flatten_draws(idata.posterior["student_t_nu"])[draw_indices]
+                skew_probability = expit(skew_alpha)
+                skew_student_t_a = 1.0 + student_t_nu * skew_probability
+                skew_student_t_b = 1.0 + student_t_nu * (1.0 - skew_probability)
+                standardized = jf_skew_t.rvs(
+                    a=skew_student_t_a[:, obs_genotype_idx],
+                    b=skew_student_t_b[:, obs_genotype_idx],
+                    loc=parent_mean,
+                    scale=obs_sigma,
+                    random_state=rng,
+                )
+            else:
+                standardized = rng.normal(loc=parent_mean, scale=obs_sigma)
             return data.positive_offset + data.positive_scale * standardized
 
         if data.likelihood_name == "logitnormal":
@@ -3170,6 +3493,13 @@ def summarize_model(
             random_seed=random_seed,
         )
     )
+    row.update(
+        summarize_delta_median_bayes_factor(
+            data=data,
+            idata=idata,
+            random_seed=random_seed + 1,
+        )
+    )
     row.update(summarize_scalar(variance_draws["delta_image_variance"], "delta_image_variance"))
     if data.model_level == "image_summary":
         row.update(unavailable_scalar_summary("delta_mito_variance"))
@@ -3211,6 +3541,7 @@ def analyze_metric(
     cores: int,
     target_accept: float,
     random_seed: int,
+    retry_on_warnings: bool,
     retry_max_draws: int,
     retry_max_tune: int,
     retry_max_target_accept: float,
@@ -3231,6 +3562,7 @@ def analyze_metric(
         cores (int): Number of CPU cores used by PyMC.
         target_accept (float): NUTS target acceptance rate.
         random_seed (int): Random seed for reproducible sampling and PPC.
+        retry_on_warnings (bool): Whether to retry fits after sampler warnings or errors.
         retry_max_draws (int): Upper cap for adaptive retry posterior draws per chain.
         retry_max_tune (int): Upper cap for adaptive retry warmup draws per chain.
         retry_max_target_accept (float): Upper cap for adaptive retry NUTS target acceptance.
@@ -3259,8 +3591,9 @@ def analyze_metric(
         )
     attempt_results: list[MetricAnalysisResult] = []
     engine_warning_message = ""
+    max_attempts = 3 if retry_on_warnings else 1
 
-    for attempt_index in range(3):
+    for attempt_index in range(max_attempts):
         attempt_draws, attempt_tune, attempt_target_accept = sampling_plan(
             draws=draws,
             tune=tune,
@@ -3498,6 +3831,7 @@ def run_analysis(
             cores=analysis.runtime.cores,
             target_accept=fit_config.target_accept,
             random_seed=seed,
+            retry_on_warnings=analysis.runtime.retry_on_warnings,
             retry_max_draws=analysis.runtime.retry_max_draws,
             retry_max_tune=analysis.runtime.retry_max_tune,
             retry_max_target_accept=analysis.runtime.retry_max_target_accept,

@@ -19,9 +19,10 @@ DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH = Path(
 )
 ALLOWED_SUMMARY_UPDATE_MODES = ("merge", "replace")
 ALLOWED_VISUALIZATION_REFRESH_MODES = ("never", "refit_first", "rerun_missing_traces")
+ALLOWED_SUPERPLOT_ANNOTATION_MODES = ("bayes_factor", "effect_summary")
 ALLOWED_POSITIVE_LIKELIHOODS = ("gamma", "lognormal")
 ALLOWED_BOUNDED_LIKELIHOODS = ("beta", "zero_one_inflated_beta", "logitnormal", "logit_skew_normal")
-ALLOWED_REAL_LIKELIHOODS = ("normal",)
+ALLOWED_REAL_LIKELIHOODS = ("normal", "student_t", "skew_normal", "skew_student_t")
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,8 @@ class BayesRuntimeConfig:
     save_idata: bool
     summary_update_mode: str
     visualization_refresh_mode: str
+    superplot_annotation_mode: str
+    retry_on_warnings: bool
     retry_max_draws: int
     retry_max_tune: int
     retry_max_target_accept: float
@@ -279,6 +282,8 @@ def parse_runtime_section(section: dict[str, Any]) -> BayesRuntimeConfig:
             "save_idata",
             "summary_update_mode",
             "visualization_refresh_mode",
+            "superplot_annotation_mode",
+            "retry_on_warnings",
             "retry_max_draws",
             "retry_max_tune",
             "retry_max_target_accept",
@@ -304,12 +309,24 @@ def parse_runtime_section(section: dict[str, Any]) -> BayesRuntimeConfig:
             "Config value 'runtime.visualization_refresh_mode' must be one of "
             f"{list(ALLOWED_VISUALIZATION_REFRESH_MODES)}."
         )
+    superplot_annotation_mode = require_string(
+        "runtime",
+        "superplot_annotation_mode",
+        section["superplot_annotation_mode"],
+    )
+    if superplot_annotation_mode not in ALLOWED_SUPERPLOT_ANNOTATION_MODES:
+        raise ValueError(
+            "Config value 'runtime.superplot_annotation_mode' must be one of "
+            f"{list(ALLOWED_SUPERPLOT_ANNOTATION_MODES)}."
+        )
     return BayesRuntimeConfig(
         cores=require_int("runtime", "cores", section["cores"]),
         seed=require_int("runtime", "seed", section["seed"], minimum=0),
         save_idata=require_bool("runtime", "save_idata", section["save_idata"]),
         summary_update_mode=summary_update_mode,
         visualization_refresh_mode=visualization_refresh_mode,
+        superplot_annotation_mode=superplot_annotation_mode,
+        retry_on_warnings=require_bool("runtime", "retry_on_warnings", section["retry_on_warnings"]),
         retry_max_draws=require_int("runtime", "retry_max_draws", section["retry_max_draws"]),
         retry_max_tune=require_int("runtime", "retry_max_tune", section["retry_max_tune"]),
         retry_max_target_accept=require_float(
@@ -340,6 +357,7 @@ def validate_available_options(section: dict[str, Any]) -> None:
             "bounded_likelihoods",
             "summary_update_modes",
             "visualization_refresh_modes",
+            "superplot_annotation_modes",
             "repeat_options",
         },
         optional_keys={"real_likelihoods"},
@@ -348,6 +366,7 @@ def validate_available_options(section: dict[str, Any]) -> None:
     bounded_likelihoods = tuple(section["bounded_likelihoods"])
     summary_update_modes = tuple(section["summary_update_modes"])
     visualization_refresh_modes = tuple(section["visualization_refresh_modes"])
+    superplot_annotation_modes = tuple(section["superplot_annotation_modes"])
     repeat_options = tuple(section["repeat_options"])
     real_likelihoods = tuple(section.get("real_likelihoods", ALLOWED_REAL_LIKELIHOODS))
     if positive_likelihoods != ALLOWED_POSITIVE_LIKELIHOODS:
@@ -369,6 +388,11 @@ def validate_available_options(section: dict[str, Any]) -> None:
         raise ValueError(
             "Config section 'available_options.visualization_refresh_modes' must be "
             f"{list(ALLOWED_VISUALIZATION_REFRESH_MODES)}."
+        )
+    if superplot_annotation_modes != ALLOWED_SUPERPLOT_ANNOTATION_MODES:
+        raise ValueError(
+            "Config section 'available_options.superplot_annotation_modes' must be "
+            f"{list(ALLOWED_SUPERPLOT_ANNOTATION_MODES)}."
         )
     if repeat_options != (True, False):
         raise ValueError(
