@@ -14,8 +14,8 @@ from typing import Any
 import yaml
 
 
-DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH = Path(
-    "/workspaces/mito-counter/hierarchical_bayes_config.yaml"
+DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH = (
+    Path(__file__).resolve().parent / "hierarchical_bayes_config.yaml"
 )
 ALLOWED_SUMMARY_UPDATE_MODES = ("merge", "replace")
 ALLOWED_VISUALIZATION_REFRESH_MODES = ("never", "refit_first", "rerun_missing_traces")

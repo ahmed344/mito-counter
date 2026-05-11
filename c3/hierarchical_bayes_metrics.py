@@ -34,11 +34,10 @@ from hierarchical_bayes_config import (
 )
 
 
-INPUT_CSV = Path("/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv")
-OUTPUT_CSV = Path(
-    "/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics.csv"
-)
-TRACE_DIR = Path("/workspaces/mito-counter/data/Calpaine_3/results/bayes_traces")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+INPUT_CSV = REPO_ROOT / "data" / "Calpaine_3" / "results" / "measurments_cleaned.csv"
+OUTPUT_CSV = REPO_ROOT / "data" / "Calpaine_3" / "results" / "hierarchical_bayes_statistics.csv"
+TRACE_DIR = REPO_ROOT / "data" / "Calpaine_3" / "results" / "bayes_traces"
 DEFAULT_POSITIVE_LIKELIHOOD = "gamma"
 DEFAULT_BOUNDED_LIKELIHOOD = "auto"
 POSITIVE_LIKELIHOODS = ("gamma", "lognormal")

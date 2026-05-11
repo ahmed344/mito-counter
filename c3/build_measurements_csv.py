@@ -12,16 +12,15 @@ from typing import Any
 
 import tifffile as tiff
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+INPUT_ROOT = REPO_ROOT / "data" / "Calpaine_3" / "Processed"
+OUTPUT_CSV = REPO_ROOT / "data" / "Calpaine_3" / "results" / "measurments.csv"
+OUTPUT_CLEANED_CSV = REPO_ROOT / "data" / "Calpaine_3" / "results" / "measurments_cleaned.csv"
+OUTPUT_IMAGE_SUMMARY_CSV = (
+    REPO_ROOT / "data" / "Calpaine_3" / "results" / "measurments_cleaned_image_summary.csv"
+)
 REFERENCE_MAGNIFICATION = 6800.0
 REFERENCE_PIXEL_SIZE_UM = 0.0015396
-INPUT_ROOT = Path("/workspaces/mito-counter/data/Calpaine_3/Processed")
-OUTPUT_CSV = Path("/workspaces/mito-counter/data/Calpaine_3/results/measurments.csv")
-OUTPUT_CLEANED_CSV = Path(
-    "/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv"
-)
-OUTPUT_IMAGE_SUMMARY_CSV = Path(
-    "/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned_image_summary.csv"
-)
 MIN_MAJOR_AXIS_PX = 30.0
 MIN_MINOR_AXIS_PX = 5.0
 SPATIAL_RADIUS_BIN_COUNT = 20

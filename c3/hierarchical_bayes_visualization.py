@@ -9,6 +9,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import arviz as az
 import matplotlib
 import numpy as np
@@ -49,7 +53,7 @@ from hierarchical_bayes_metrics import (
 from stats_utils import plot_super_beeswarm, plot_super_violin
 
 
-BAYES_SCRIPT_PATH = Path("/workspaces/mito-counter/hierarchical_bayes_metrics.py")
+BAYES_SCRIPT_PATH = Path(__file__).resolve().parent / "hierarchical_bayes_metrics.py"
 QUANTILE_LEVELS = (0.10, 0.50, 0.90)
 IMAGE_SUMMARY_PPC_DENSITY_BINS = 24
 GRID_ALPHA = 0.22

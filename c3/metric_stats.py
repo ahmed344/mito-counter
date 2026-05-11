@@ -13,7 +13,12 @@
 # ---
 
 # %% Imports and plotting configuration
+import sys
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -28,10 +33,9 @@ from stats_utils import filter_metric_region, maybe_show_current_figure, plot_me
 sns.set_style("whitegrid")
 # %% Load and prepare input data
 # Read per-object morphological measurements exported by the pipeline.
-df = pd.read_csv("/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv")
-df_image_summary = pd.read_csv(
-    "/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned_image_summary.csv"
-)
+_DATA_RESULTS = _REPO_ROOT / "data" / "Calpaine_3" / "results"
+df = pd.read_csv(_DATA_RESULTS / "measurments_cleaned.csv")
+df_image_summary = pd.read_csv(_DATA_RESULTS / "measurments_cleaned_image_summary.csv")
 excluded_measurements = {"Connected_parts", "Image_Region"}
 
 # Treat grouping columns as categorical to keep consistent ordering/group handling.
@@ -66,7 +70,7 @@ metric_values_df.isin([0]).sum()
 # %% Plot histograms for all numeric metrics
 # This gives a first-pass view of skew/outliers for each measurement.
 metric_values_df.hist(figsize=(25, 8), bins=70, layout=(2, np.ceil(len(metrics) / 2).astype(int)))
-plt.savefig("/workspaces/mito-counter/data/Calpaine_3/results/figures/histograms.png", dpi=900)
+plt.savefig(_DATA_RESULTS / "figures" / "histograms.png", dpi=900)
 maybe_show_current_figure()
 # %% Human-readable units for y-axis labels
 
@@ -98,14 +102,13 @@ units = {
 }
 # %% Generate annotated comparison boxplots
 # All plots are saved to the same figures directory.
-save_dir = Path('/workspaces/mito-counter/data/Calpaine_3/results/figures')
+save_dir = _DATA_RESULTS / "figures"
 image_summary_save_dir = save_dir / "image_summary"
-bayesian_summary_csv = Path("/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics.csv")
-bayesian_image_summary_csv = Path(
-    "/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics_image_summary.csv"
-)
-bayesian_config_yaml = Path("/workspaces/mito-counter/hierarchical_bayes_config.yaml")
-bayesian_image_summary_config_yaml = Path("/workspaces/mito-counter/hierarchical_bayes_image_summary_config.yaml")
+bayesian_summary_csv = _DATA_RESULTS / "hierarchical_bayes_statistics.csv"
+bayesian_image_summary_csv = _DATA_RESULTS / "hierarchical_bayes_statistics_image_summary.csv"
+_c3_dir = Path(__file__).resolve().parent
+bayesian_config_yaml = _c3_dir / "hierarchical_bayes_config.yaml"
+bayesian_image_summary_config_yaml = _c3_dir / "hierarchical_bayes_image_summary_config.yaml"
 BAYES_MEAN_ANNOTATION_COLOR = "purple"
 BAYES_MEDIAN_ANNOTATION_COLOR = "tab:blue"
 BAYES_FACTOR_ANNOTATION_MODE = "bayes_factor"
@@ -352,5 +355,5 @@ for muscle in sorted(df["Muscle"].dropna().unique()):
 
 # Save one combined table containing measurement test results.
 results_df = pd.DataFrame(results).sort_values(["Measurment", "Muscle"])
-results_df.to_csv("/workspaces/mito-counter/data/Calpaine_3/results/statistics.csv", index=False)
+results_df.to_csv(_DATA_RESULTS / "statistics.csv", index=False)
 results_df
