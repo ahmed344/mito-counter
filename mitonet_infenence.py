@@ -11,6 +11,7 @@ import torch
 import yaml
 from empanada.config_loaders import load_config
 from empanada.inference.engines import PanopticDeepLabEngine
+from scipy.spatial import QhullError, Voronoi
 
 import tifffile as tiff
 
@@ -223,6 +224,244 @@ def count_connected_parts(mask: np.ndarray) -> int:
     return max(0, int(num_labels) - 1)
 
 
+def compute_kth_nearest_distances(coords: np.ndarray, k_values: tuple[int, ...]) -> dict[int, np.ndarray]:
+    """Compute k-th nearest centroid distances for each point.
+
+    Args:
+        coords (np.ndarray): Centroid coordinates with shape ``(n_points, 2)`` in pixels.
+        k_values (tuple[int, ...]): One-based neighbor ranks to compute.
+
+    Returns:
+        dict[int, np.ndarray]: Mapping from each k value to per-point distances in pixels.
+    """
+    point_count = int(coords.shape[0])
+    distances_by_k = {
+        k_value: np.full(point_count, np.nan, dtype=np.float64) for k_value in k_values
+    }
+    if point_count <= 1:
+        return distances_by_k
+
+    diff = coords[:, None, :] - coords[None, :, :]
+    distances = np.sqrt(np.sum(diff**2, axis=2))
+    np.fill_diagonal(distances, np.inf)
+    sorted_distances = np.sort(distances, axis=1)
+    for k_value in k_values:
+        if point_count > k_value:
+            distances_by_k[k_value] = sorted_distances[:, k_value - 1]
+    return distances_by_k
+
+
+def polygon_area(points: np.ndarray) -> float:
+    """Calculate polygon area using the shoelace formula.
+
+    Args:
+        points (np.ndarray): Ordered polygon vertices with shape ``(n_vertices, 2)``.
+
+    Returns:
+        float: Polygon area in square coordinate units.
+    """
+    if points.shape[0] < 3:
+        return 0.0
+    x_coords = points[:, 0]
+    y_coords = points[:, 1]
+    return float(
+        0.5
+        * abs(
+            np.dot(x_coords, np.roll(y_coords, -1))
+            - np.dot(y_coords, np.roll(x_coords, -1))
+        )
+    )
+
+
+def clip_polygon_to_half_plane(
+    polygon: np.ndarray,
+    *,
+    axis: int,
+    bound: float,
+    keep_greater: bool,
+) -> np.ndarray:
+    """Clip a polygon to one axis-aligned half-plane.
+
+    Args:
+        polygon (np.ndarray): Ordered polygon vertices with shape ``(n_vertices, 2)``.
+        axis (int): Coordinate axis to clip, where 0 is x and 1 is y.
+        bound (float): Boundary coordinate for the half-plane.
+        keep_greater (bool): Keep coordinates greater than or equal to ``bound`` when
+            true, otherwise keep coordinates less than or equal to ``bound``.
+
+    Returns:
+        np.ndarray: Clipped polygon vertices.
+    """
+    if polygon.size == 0:
+        return polygon.reshape(0, 2)
+
+    clipped_points = []
+    previous = polygon[-1]
+    previous_inside = (
+        previous[axis] >= bound if keep_greater else previous[axis] <= bound
+    )
+    for current in polygon:
+        current_inside = (
+            current[axis] >= bound if keep_greater else current[axis] <= bound
+        )
+        if current_inside != previous_inside:
+            denominator = current[axis] - previous[axis]
+            if denominator != 0.0:
+                fraction = (bound - previous[axis]) / denominator
+                clipped_points.append(previous + fraction * (current - previous))
+        if current_inside:
+            clipped_points.append(current)
+        previous = current
+        previous_inside = current_inside
+
+    if not clipped_points:
+        return np.empty((0, 2), dtype=np.float64)
+    return np.asarray(clipped_points, dtype=np.float64)
+
+
+def clip_polygon_to_image(
+    polygon: np.ndarray,
+    *,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    """Clip a polygon to the image rectangle.
+
+    Args:
+        polygon (np.ndarray): Ordered polygon vertices with shape ``(n_vertices, 2)``.
+        width (int): Image width in pixels.
+        height (int): Image height in pixels.
+
+    Returns:
+        np.ndarray: Polygon clipped to ``x=[0, width - 1]`` and ``y=[0, height - 1]``.
+    """
+    if width <= 1 or height <= 1:
+        return np.empty((0, 2), dtype=np.float64)
+    clipped = clip_polygon_to_half_plane(
+        polygon, axis=0, bound=0.0, keep_greater=True
+    )
+    clipped = clip_polygon_to_half_plane(
+        clipped, axis=0, bound=float(width - 1), keep_greater=False
+    )
+    clipped = clip_polygon_to_half_plane(
+        clipped, axis=1, bound=0.0, keep_greater=True
+    )
+    clipped = clip_polygon_to_half_plane(
+        clipped, axis=1, bound=float(height - 1), keep_greater=False
+    )
+    return clipped
+
+
+def finite_voronoi_regions(
+    voronoi: Voronoi,
+    *,
+    radius: float,
+) -> tuple[list[list[int]], np.ndarray]:
+    """Reconstruct finite Voronoi regions for a 2D diagram.
+
+    Args:
+        voronoi (Voronoi): SciPy Voronoi diagram built from centroid coordinates.
+        radius (float): Distance used to close infinite ridges.
+
+    Returns:
+        tuple[list[list[int]], np.ndarray]: Region vertex indices per input point and
+        the expanded vertex array.
+    """
+    if voronoi.points.shape[1] != 2:
+        raise ValueError("Voronoi reconstruction only supports 2D coordinates.")
+
+    new_regions: list[list[int]] = []
+    new_vertices = voronoi.vertices.tolist()
+    center = voronoi.points.mean(axis=0)
+    all_ridges: dict[int, list[tuple[int, int, int]]] = {}
+    for (point_a, point_b), (vertex_a, vertex_b) in zip(
+        voronoi.ridge_points, voronoi.ridge_vertices
+    ):
+        all_ridges.setdefault(point_a, []).append((point_b, vertex_a, vertex_b))
+        all_ridges.setdefault(point_b, []).append((point_a, vertex_a, vertex_b))
+
+    for point_index, region_index in enumerate(voronoi.point_region):
+        vertices = voronoi.regions[region_index]
+        if all(vertex_index >= 0 for vertex_index in vertices):
+            new_regions.append(vertices)
+            continue
+
+        new_region = [vertex_index for vertex_index in vertices if vertex_index >= 0]
+        for neighbor_index, vertex_a, vertex_b in all_ridges.get(point_index, []):
+            if vertex_a >= 0 and vertex_b >= 0:
+                continue
+            if vertex_a < 0:
+                vertex_a, vertex_b = vertex_b, vertex_a
+            tangent = voronoi.points[neighbor_index] - voronoi.points[point_index]
+            tangent = tangent / np.linalg.norm(tangent)
+            normal = np.array([-tangent[1], tangent[0]])
+            midpoint = (
+                voronoi.points[point_index] + voronoi.points[neighbor_index]
+            ) / 2.0
+            direction = np.sign(np.dot(midpoint - center, normal)) * normal
+            far_point = voronoi.vertices[vertex_a] + direction * radius
+            new_region.append(len(new_vertices))
+            new_vertices.append(far_point.tolist())
+
+        region_vertices = np.asarray([new_vertices[index] for index in new_region])
+        angles = np.arctan2(
+            region_vertices[:, 1] - region_vertices[:, 1].mean(),
+            region_vertices[:, 0] - region_vertices[:, 0].mean(),
+        )
+        new_regions.append([new_region[index] for index in np.argsort(angles)])
+
+    return new_regions, np.asarray(new_vertices, dtype=np.float64)
+
+
+def compute_voronoi_cell_areas(coords: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Compute image-clipped Voronoi cell areas for centroid coordinates.
+
+    Args:
+        coords (np.ndarray): Centroid coordinates with shape ``(n_points, 2)`` in pixels.
+        width (int): Image width in pixels.
+        height (int): Image height in pixels.
+
+    Returns:
+        np.ndarray: Per-centroid clipped Voronoi cell areas in square pixels.
+    """
+    point_count = int(coords.shape[0])
+    areas = np.zeros(point_count, dtype=np.float64)
+    if point_count < 3 or width <= 1 or height <= 1:
+        return areas
+
+    try:
+        voronoi = Voronoi(coords)
+    except QhullError:
+        return areas
+
+    radius = float(max(width, height) * 2)
+    try:
+        regions, vertices = finite_voronoi_regions(voronoi, radius=radius)
+    except (ValueError, FloatingPointError):
+        return areas
+
+    for index, region in enumerate(regions):
+        polygon = vertices[region]
+        clipped_polygon = clip_polygon_to_image(polygon, width=width, height=height)
+        areas[index] = polygon_area(clipped_polygon)
+    return areas
+
+
+def format_optional_float(value: float) -> str:
+    """Format a finite float for CSV output, leaving missing values blank.
+
+    Args:
+        value (float): Numeric value to format.
+
+    Returns:
+        str: Fixed-width decimal text for finite values, otherwise an empty string.
+    """
+    numeric_value = float(value)
+    if not np.isfinite(numeric_value):
+        return ""
+    return f"{numeric_value:.3f}"
+
+
 def compute_instance_metrics(labels: np.ndarray) -> list[dict]:
     """Compute per-instance metrics from a label image.
 
@@ -231,7 +470,8 @@ def compute_instance_metrics(labels: np.ndarray) -> list[dict]:
 
     Returns:
         list[dict]: Per-instance metric dictionaries that include
-        connected-part counts for each segmentation.
+        connected-part counts and spatial neighborhood measurements for each
+        segmentation.
     """
     from skimage.measure import regionprops
 
@@ -258,7 +498,7 @@ def compute_instance_metrics(labels: np.ndarray) -> list[dict]:
         minor = float(minor_attr) if minor_attr else 0.0
         corrected_area = float(np.pi * ((minor / 2.0) ** 2))
         minimum_feret_diameter = compute_minimum_feret_diameter(prop.image)
-        elongation = (major / minor) if minor > 0 else 0.0
+        elongation = (major / minor) if minor > 0 else 1.0
         perimeter = float(prop.perimeter) if prop.perimeter else 0.0
         circularity = (4.0 * np.pi * area / (perimeter ** 2)) if perimeter > 0 else 0.0
         solidity = float(prop.solidity) if prop.solidity is not None else 0.0
@@ -276,6 +516,9 @@ def compute_instance_metrics(labels: np.ndarray) -> list[dict]:
                 "circularity_form_factor": circularity,
                 "solidity_branching": solidity,
                 "nearest_neighbor_distance": 0.0,
+                "third_nearest_neighbor_distance": 0.0,
+                "fifth_nearest_neighbor_distance": 0.0,
+                "voronoi_cell_area": 0.0,
                 "centroid_x": float(centroid_rc[1]),
                 "centroid_y": float(centroid_rc[0]),
                 "connected_parts": connected_parts,
@@ -285,15 +528,19 @@ def compute_instance_metrics(labels: np.ndarray) -> list[dict]:
 
     if centroids:
         coords = np.array(centroids, dtype=np.float64)
+        distances_by_k = compute_kth_nearest_distances(coords, k_values=(1, 3, 5))
+        voronoi_areas = compute_voronoi_cell_areas(
+            coords, width=int(labels.shape[1]), height=int(labels.shape[0])
+        )
         for i in range(len(coords)):
-            if len(coords) == 1:
-                nnd = 0.0
-            else:
-                diff = coords - coords[i]
-                dist = np.sqrt((diff ** 2).sum(axis=1))
-                dist[i] = np.inf
-                nnd = float(np.min(dist))
-            metrics[i]["nearest_neighbor_distance"] = nnd
+            metrics[i]["nearest_neighbor_distance"] = float(distances_by_k[1][i])
+            metrics[i]["third_nearest_neighbor_distance"] = float(
+                distances_by_k[3][i]
+            )
+            metrics[i]["fifth_nearest_neighbor_distance"] = float(
+                distances_by_k[5][i]
+            )
+            metrics[i]["voronoi_cell_area"] = float(voronoi_areas[i])
 
     return metrics
 
@@ -320,6 +567,9 @@ def write_metrics_csv(path: Path, metrics: list[dict]) -> None:
         "Circularity",
         "Solidity",
         "NND",
+        "3NND",
+        "5NND",
+        "Voronoi_Cell_Area",
         "Connected_parts",
     ]
     with open(path, "w", newline="", encoding="utf-8") as handle:
@@ -338,7 +588,10 @@ def write_metrics_csv(path: Path, metrics: list[dict]) -> None:
                     "Elongation": f"{row['aspect_ratio_elongation']:.3f}",
                     "Circularity": f"{row['circularity_form_factor']:.3f}",
                     "Solidity": f"{row['solidity_branching']:.3f}",
-                    "NND": f"{row['nearest_neighbor_distance']:.3f}",
+                    "NND": format_optional_float(row["nearest_neighbor_distance"]),
+                    "3NND": format_optional_float(row["third_nearest_neighbor_distance"]),
+                    "5NND": format_optional_float(row["fifth_nearest_neighbor_distance"]),
+                    "Voronoi_Cell_Area": f"{row['voronoi_cell_area']:.3f}",
                     "Connected_parts": int(row["connected_parts"]),
                 }
             )
