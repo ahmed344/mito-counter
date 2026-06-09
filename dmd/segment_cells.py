@@ -12,7 +12,8 @@ import tifffile as tiff
 SegmentationMeta = dict[str, float | str | bool]
 
 
-DEFAULT_INPUT_ROOT = Path("/workspaces/mito-counter/data/DMD/Processed")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_INPUT_ROOT = REPO_ROOT / "data" / "DMD" / "Processed"
 EXCLUDED_STEM_SUFFIXES = (
     "_corrected",
     "_segmented",
@@ -47,7 +48,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Segment cell regions from grayscale TIFF images. By default, the script "
             "processes all source TIFF files under the DMD processed root and writes "
-            "'*_cells.tif' masks next to each input image."
+            "'*_cells.tif' instance masks next to each input image."
         )
     )
     parser.add_argument(
@@ -328,6 +329,22 @@ def filter_components(
     }
 
 
+def label_cell_instances(mask: np.ndarray) -> tuple[np.ndarray, int]:
+    """Assign connected-component instance labels to a cell mask.
+
+    Args:
+        mask (np.ndarray): Binary cell mask with nonzero pixels marking cells.
+
+    Returns:
+        tuple[np.ndarray, int]: Integer instance mask with background ``0`` and
+        sequential cell labels, plus the number of labeled instances.
+    """
+    binary = (mask > 0).astype(np.uint8)
+    num_labels, labels = cv2.connectedComponents(binary, connectivity=8)
+    instance_count = max(0, int(num_labels) - 1)
+    return labels.astype(np.uint16), instance_count
+
+
 def select_center_component(
     mask: np.ndarray,
     center_distance_weight: float,
@@ -410,7 +427,8 @@ def segment_cells(
         center_only (bool): Whether to retain only the best central component.
 
     Returns:
-        tuple[np.ndarray, SegmentationMeta]: Final binary mask (0/255) and segmentation
+        tuple[np.ndarray, SegmentationMeta]: Final instance mask, where background is
+        ``0`` and each retained cell has a positive integer label, plus segmentation
         metadata describing the retained components.
     """
     image_u8 = to_uint8(image)
@@ -441,9 +459,13 @@ def segment_cells(
             center_distance_weight=center_distance_weight,
         )
         meta.update(center_meta)
-        return selected, meta
+        labeled, instance_count = label_cell_instances(selected)
+        meta["component_count"] = float(instance_count)
+        return labeled, meta
 
-    return filtered, meta
+    labeled, instance_count = label_cell_instances(filtered)
+    meta["component_count"] = float(instance_count)
+    return labeled, meta
 
 
 def is_source_image(path: Path) -> bool:
@@ -509,17 +531,18 @@ def resolve_input_images(input_root: Path, input_file: Path | None) -> list[Path
 
 
 def write_mask(path: Path, mask: np.ndarray) -> None:
-    """Write a binary mask TIFF to disk.
+    """Write an instance mask TIFF to disk.
 
     Args:
         path (Path): Output TIFF path.
-        mask (np.ndarray): Binary mask image with values 0 or 255.
+        mask (np.ndarray): Instance mask image where 0 is background and positive
+            integers are cell labels.
 
     Returns:
         None: This function writes output to disk.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tiff.imwrite(str(path), mask.astype(np.uint8))
+    tiff.imwrite(str(path), mask.astype(np.uint16))
 
 
 def print_summary(
@@ -543,7 +566,7 @@ def print_summary(
     print(f"Output: {output_path}")
     print(f"Otsu threshold: {meta['otsu_threshold']:.3f}")
     print(f"Threshold mode: {meta['threshold_mode']}")
-    print(f"Kept components: {int(meta['component_count'])}")
+    print(f"Kept cell instances: {int(meta['component_count'])}")
     print(f"Kept total area: {meta['total_area']:.0f} px")
     print(f"Kept total area ratio: {meta['total_area_ratio']:.4f}")
     if center_only:

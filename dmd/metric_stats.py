@@ -17,26 +17,54 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 from scipy.stats import mannwhitneyu
 from statannotations.Annotator import Annotator
+import yaml
 
 sns.set_style("whitegrid")
 plt.switch_backend("Agg")
 
-INPUT_CSV = Path("/workspaces/mito-counter/data/DMD/results/measurements_cells_cleaned.csv")
-RESULTS_DIR = Path("/workspaces/mito-counter/data/DMD/results")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from dmd import stats_utils as dmd_stats_utils
+
+INPUT_CSV = REPO_ROOT / "data" / "DMD" / "results" / "measurements_cleaned.csv"
+IMAGE_SUMMARY_INPUT_CSVS = [
+    REPO_ROOT / "data" / "DMD" / "results" / "measurments_cleaned_ss_summary.csv",
+    REPO_ROOT / "data" / "DMD" / "results" / "measurments_cleaned_imf_summary.csv",
+]
+RESULTS_DIR = REPO_ROOT / "data" / "DMD" / "results"
 FIGURES_DIR = RESULTS_DIR / "figures_cells"
+IMAGE_SUMMARY_FIGURES_DIR = FIGURES_DIR / "image_summary"
 STATISTICS_CSV = RESULTS_DIR / "statistics_cells.csv"
-SS_THRESHOLD_UM = 1.0
+BAYESIAN_SUMMARY_CSV = RESULTS_DIR / "hierarchical_bayes_statistics.csv"
+BAYESIAN_CONFIG_YAML = REPO_ROOT / "dmd" / "hierarchical_bayes_config.yaml"
+BAYESIAN_IMAGE_SUMMARY_CSV = RESULTS_DIR / "hierarchical_bayes_statistics_cell_summary.csv"
+BAYESIAN_IMAGE_SUMMARY_CONFIG_YAML = (
+    REPO_ROOT / "dmd" / "hierarchical_bayes_cell_summary_config.yaml"
+)
 SS_LABEL = "Sub-sarcolemmal (SS)"
 IMF_LABEL = "Intermyofibrillar (IMF)"
 COMPARTMENT_ORDER = [SS_LABEL, IMF_LABEL]
 MUSCLE_ORDER = ["Extraocular Muscle", "Tibialis Anterior"]
-EXCLUDED_MEASUREMENTS = {"Connected_parts", "Distance_to_cell_membrane", "Image_Region"}
+EXCLUDED_MEASUREMENTS = {
+    "Connected_parts",
+    "Distance_to_cell_membrane",
+    "Image_Region",
+    "Cell_id",
+}
+BAYES_MEAN_ANNOTATION_COLOR = "purple"
+BAYES_MEDIAN_ANNOTATION_COLOR = "tab:blue"
+BAYES_FACTOR_ANNOTATION_MODE = "bayes_factor"
+EFFECT_SUMMARY_ANNOTATION_MODE = "effect_summary"
 
 
 # %% Helper functions
@@ -70,21 +98,6 @@ def sort_conditions(values: list[str]) -> list[str]:
     )
 
 
-def make_compartment(distance_to_membrane_um: float) -> str:
-    """Classify a mitochondrion as SS or IMF.
-
-    Args:
-        distance_to_membrane_um (float): Distance from the instance to the cell membrane in micrometers.
-
-    Returns:
-        str: ``Sub-sarcolemmal (SS)`` when the distance is at most 1.0 um, otherwise
-        ``Intermyofibrillar (IMF)``.
-    """
-    if distance_to_membrane_um <= SS_THRESHOLD_UM:
-        return SS_LABEL
-    return IMF_LABEL
-
-
 def build_muscle_compartment_label(muscle: str, compartment: str) -> str:
     """Create a compact combined plotting label for muscle and compartment.
 
@@ -95,8 +108,15 @@ def build_muscle_compartment_label(muscle: str, compartment: str) -> str:
     Returns:
         str: Combined muscle-compartment label.
     """
+    muscle_text = str(muscle).strip()
+    if muscle_text == "Extraocular Muscle":
+        short_muscle = "EOM"
+    elif muscle_text == "Tibialis Anterior":
+        short_muscle = "TA"
+    else:
+        short_muscle = muscle_text
     short_compartment = "SS" if compartment == SS_LABEL else "IMF"
-    return f"{muscle} | {short_compartment}"
+    return f"{short_muscle} | {short_compartment}"
 
 
 def plot_stat_boxplot(
@@ -176,11 +196,11 @@ def plot_stat_boxplot(
         unit_label = f" ({formatted_unit})"
 
     sns.despine()
-    plt.ylabel(f"{y}{unit_label}", fontsize=12)
-    plt.xlabel(x, fontsize=12)
+    plt.ylabel(f"{y}{unit_label}", fontsize=13)
+    plt.xlabel(x, fontsize=13)
     plt.title(f"{y} by {x} and {hue}", fontsize=14, pad=20)
     plt.legend(title=hue)
-    plt.xticks(rotation=15, ha="right")
+    plt.xticks(rotation=0, ha="center", fontsize=11)
     plt.tight_layout()
 
     if save_dir is not None:
@@ -219,15 +239,239 @@ def get_numeric_measurement_columns(data: pd.DataFrame) -> list[str]:
     return numeric_columns
 
 
+def load_image_summary_dataframe(input_csvs: list[Path]) -> pd.DataFrame:
+    """Load and combine DMD image-summary CSV files into one dataframe.
+
+    Args:
+        input_csvs (list[Path]): CSV paths containing per-image summary measurements.
+
+    Returns:
+        pd.DataFrame: Concatenated image-summary table with categorical group columns.
+    """
+
+    available_paths = [path for path in input_csvs if path.exists()]
+    if not available_paths:
+        return pd.DataFrame()
+    combined = pd.concat((pd.read_csv(path) for path in available_paths), ignore_index=True)
+    combined["Condition"] = combined["Condition"].astype("category")
+    combined["Muscle"] = combined["Muscle"].astype("category")
+    combined = combined.dropna(subset=["Compartment"]).copy()
+    combined["Compartment"] = combined["Compartment"].astype("category")
+    combined["Muscle_Compartment"] = combined.apply(
+        lambda row: build_muscle_compartment_label(row["Muscle"], row["Compartment"]),
+        axis=1,
+    )
+    return combined
+
+
+def load_superplot_annotation_mode(config_yaml: Path) -> str:
+    """Load superplot annotation mode from hierarchical Bayesian YAML config.
+
+    Args:
+        config_yaml (Path): Path to DMD hierarchical Bayesian config YAML.
+
+    Returns:
+        str: Annotation mode; defaults to ``bayes_factor`` when absent/invalid.
+    """
+
+    if not config_yaml.exists():
+        return BAYES_FACTOR_ANNOTATION_MODE
+    with config_yaml.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+    runtime = dict(config.get("runtime", {})) if isinstance(config, dict) else {}
+    annotation_mode = str(
+        runtime.get("superplot_annotation_mode", BAYES_FACTOR_ANNOTATION_MODE)
+    ).strip()
+    if annotation_mode not in {
+        BAYES_FACTOR_ANNOTATION_MODE,
+        EFFECT_SUMMARY_ANNOTATION_MODE,
+    }:
+        return BAYES_FACTOR_ANNOTATION_MODE
+    return annotation_mode
+
+
+def load_bayesian_superplot_annotations(summary_csv: Path) -> pd.DataFrame:
+    """Load Bayesian summary rows used for superplot bracket annotations.
+
+    Args:
+        summary_csv (Path): CSV containing hierarchical Bayesian fit summaries.
+
+    Returns:
+        pd.DataFrame: Summary dataframe; empty when the file is unavailable/incomplete.
+    """
+
+    required_columns = {"metric", "muscle", "compartment", "wt_label", "ko_label"}
+    if not summary_csv.exists():
+        return pd.DataFrame(columns=sorted(required_columns))
+    summary_df = pd.read_csv(summary_csv)
+    if not required_columns.issubset(summary_df.columns):
+        missing_columns = sorted(required_columns - set(summary_df.columns))
+        print(
+            "Skipping Bayesian superplot annotations: missing columns "
+            f"{missing_columns} in {summary_csv}."
+        )
+        return pd.DataFrame(columns=sorted(required_columns))
+    return summary_df
+
+
+def format_delta_effect_annotation(row: pd.Series, label: str) -> str:
+    """Format one posterior delta effect summary for superplot annotation text.
+
+    Args:
+        row (pd.Series): Bayesian summary row with delta estimate fields.
+        label (str): Column prefix such as ``delta_mean`` or ``delta_median``.
+
+    Returns:
+        str: Formatted text like ``estimate [hdi_low, hdi_high] pd%`` or empty string.
+    """
+
+    try:
+        estimate = float(row[label])
+        hdi_low = float(row[f"{label}_hdi_low"])
+        hdi_high = float(row[f"{label}_hdi_high"])
+        pd_value = float(row[f"{label}_pd"])
+    except (KeyError, TypeError, ValueError):
+        return ""
+    if not all(np.isfinite(value) for value in (estimate, hdi_low, hdi_high, pd_value)):
+        return ""
+    return f"{estimate:.4g} [{hdi_low:.4g}, {hdi_high:.4g}] {pd_value:.1f}%"
+
+
+def bayesian_annotations_for_metric(
+    summary_df: pd.DataFrame,
+    metric: str,
+    annotation_mode: str,
+) -> list[dict[str, str]]:
+    """Build DMD muscle-compartment annotation records for one metric.
+
+    Args:
+        summary_df (pd.DataFrame): Bayesian summary dataframe.
+        metric (str): Metric currently being plotted.
+        annotation_mode (str): Either ``bayes_factor`` or ``effect_summary``.
+
+    Returns:
+        list[dict[str, str]]: Records consumed by DMD superplot renderers.
+    """
+
+    if summary_df.empty:
+        return []
+    metric_rows = summary_df.loc[summary_df["metric"].astype(str) == str(metric)]
+    annotations: list[dict[str, str]] = []
+    for _, row in metric_rows.iterrows():
+        if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE:
+            mean_label = format_delta_effect_annotation(row=row, label="delta_mean")
+            median_label = format_delta_effect_annotation(row=row, label="delta_median")
+        else:
+            mean_label = str(row.get("delta_mean_bf_annotation", "")).strip()
+            median_label = str(row.get("delta_median_bf_annotation", "")).strip()
+            if mean_label.lower() == "nan":
+                mean_label = ""
+            if median_label.lower() == "nan":
+                median_label = ""
+        if not mean_label and not median_label:
+            continue
+        x_label = build_muscle_compartment_label(
+            muscle=str(row["muscle"]),
+            compartment=str(row["compartment"]),
+        )
+        annotations.append(
+            {
+                "x": x_label,
+                "hue_start": str(row["wt_label"]),
+                "hue_end": str(row["ko_label"]),
+                "mean_label": (
+                    mean_label
+                    if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE
+                    else f"mean {mean_label}"
+                    if mean_label
+                    else ""
+                ),
+                "mean_color": BAYES_MEAN_ANNOTATION_COLOR,
+                "median_label": (
+                    median_label
+                    if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE
+                    else f"median {median_label}"
+                    if median_label
+                    else ""
+                ),
+                "median_color": BAYES_MEDIAN_ANNOTATION_COLOR,
+            }
+        )
+    return annotations
+
+
+def generate_superplots_for_metrics(
+    metric_specs: list[tuple[str, pd.DataFrame]],
+    save_dir: Path,
+    x: str,
+    hue: str,
+    block: str,
+    x_order: list[str],
+    hue_order: list[str],
+    unit_dict: dict[str, str],
+    summary_df: pd.DataFrame,
+    annotation_mode: str,
+) -> None:
+    """Render and save one superviolin/superbeeswarm file per metric.
+
+    Args:
+        metric_specs (list[tuple[str, pd.DataFrame]]): Ordered ``(metric, dataframe)`` pairs.
+        save_dir (Path): Directory where superplot folders are written.
+        x (str): X-axis column.
+        hue (str): Hue column.
+        block (str): Block column.
+        x_order (list[str]): Explicit x-axis order.
+        hue_order (list[str]): Explicit hue order.
+        unit_dict (dict[str, str]): Metric unit mapping.
+        summary_df (pd.DataFrame): Bayesian summary dataframe for annotations.
+        annotation_mode (str): Superplot annotation mode.
+
+    Returns:
+        None: Saves per-metric superplot PNG figures.
+    """
+    for metric, source_df in metric_specs:
+        annotations = bayesian_annotations_for_metric(
+            summary_df=summary_df,
+            metric=metric,
+            annotation_mode=annotation_mode,
+        )
+        dmd_stats_utils.plot_super_violin(
+            data=source_df,
+            x=x,
+            y=metric,
+            hue=hue,
+            block=block,
+            unit_dict=unit_dict,
+            save_dir=save_dir,
+            superplot_annotations=annotations,
+            x_order_override=x_order,
+            hue_order_override=hue_order,
+        )
+        dmd_stats_utils.plot_super_beeswarm(
+            data=source_df,
+            x=x,
+            y=metric,
+            hue=hue,
+            block=block,
+            unit_dict=unit_dict,
+            save_dir=save_dir,
+            superplot_annotations=annotations,
+            x_order_override=x_order,
+            hue_order_override=hue_order,
+        )
+
+
 # %% Load and prepare input data
 df = pd.read_csv(INPUT_CSV)
+if "Compartment" not in df.columns:
+    raise KeyError(
+        "Missing required 'Compartment' column. Run dmd/build_measurements_csv.py "
+        "to regenerate measurements_cleaned.csv."
+    )
 df["Condition"] = df["Condition"].astype("category")
 df["Muscle"] = df["Muscle"].astype("category")
-df["Distance_to_cell_membrane"] = pd.to_numeric(
-    df["Distance_to_cell_membrane"], errors="coerce"
-)
-df = df.dropna(subset=["Distance_to_cell_membrane"]).copy()
-df["Compartment"] = df["Distance_to_cell_membrane"].apply(make_compartment)
+df = df.dropna(subset=["Compartment"]).copy()
+df["Compartment"] = df["Compartment"].astype("category")
 df["Muscle_Compartment"] = df.apply(
     lambda row: build_muscle_compartment_label(row["Muscle"], row["Compartment"]),
     axis=1,
@@ -307,19 +551,39 @@ else:
 
 # %% Human-readable units for y-axis labels
 units = {
-    "Area": "um^2",
-    "Corrected_area": "um^2",
-    "Major_axis_length": "um",
-    "Minor_axis_length": "um",
-    "Minimum_Feret_Diameter": "um",
+    "Area": "nm^2",
+    "Corrected_area": "nm^2",
+    "Major_axis_length": "nm",
+    "Minor_axis_length": "nm",
+    "Minimum_Feret_Diameter": "nm",
     "Elongation": "",
     "Circularity": "",
     "Solidity": "",
-    "NND": "um",
-    "3NND": "um",
-    "5NND": "um",
-    "Voronoi_Cell_Area": "um^2",
+    "NND": "nm",
+    "3NND": "nm",
+    "5NND": "nm",
+    "Voronoi_Cell_Area": "nm^2",
     "Count": "",
+    "Density": "count/image",
+    "Area_sum": "nm^2",
+    "Corrected_area_sum": "nm^2",
+    "Minimum_Feret_Diameter_sum": "nm",
+    "Minor_axis_length_sum": "nm",
+    "Area_mean": "nm^2",
+    "Corrected_area_mean": "nm^2",
+    "Minimum_Feret_Diameter_mean": "nm",
+    "Major_axis_length_mean": "nm",
+    "Minor_axis_length_mean": "nm",
+    "Elongation_mean": "",
+    "Circularity_mean": "",
+    "Solidity_mean": "",
+    "NND_center_mean": "nm",
+    "3NND_center_mean": "nm",
+    "5NND_center_mean": "nm",
+    "Voronoi_Cell_Area_center_mean": "nm^2",
+    "Voronoi_Cell_Area_center_cv": "",
+    "Ripley_L_integral": "nm^2",
+    "Pair_Correlation_integral": "",
 }
 
 
@@ -346,6 +610,81 @@ for measurement in metrics:
         unit_dict=units,
         save_dir=FIGURES_DIR,
     )
+
+
+# %% Generate superviolin and superbeeswarm comparison plots (one file per metric)
+superplot_annotation_mode = load_superplot_annotation_mode(
+    config_yaml=BAYESIAN_CONFIG_YAML,
+)
+bayesian_summary_df = load_bayesian_superplot_annotations(
+    summary_csv=BAYESIAN_SUMMARY_CSV,
+)
+metric_specs: list[tuple[str, pd.DataFrame]] = [("Count", df_counts)]
+metric_specs.extend((measurement, df) for measurement in metrics)
+generate_superplots_for_metrics(
+    metric_specs=metric_specs,
+    save_dir=FIGURES_DIR,
+    x="Muscle_Compartment",
+    hue="Condition",
+    block="Block",
+    x_order=muscle_compartment_order,
+    hue_order=conditions,
+    unit_dict=units,
+    summary_df=bayesian_summary_df,
+    annotation_mode=superplot_annotation_mode,
+)
+
+
+# %% Generate image-summary superviolin and superbeeswarm comparison plots
+df_image_summary = load_image_summary_dataframe(input_csvs=IMAGE_SUMMARY_INPUT_CSVS)
+if not df_image_summary.empty:
+    image_summary_conditions = sort_conditions(
+        list(df_image_summary["Condition"].dropna().unique())
+    )
+    if len(image_summary_conditions) == 2:
+        image_summary_muscle_compartment_order = [
+            build_muscle_compartment_label(muscle, compartment)
+            for muscle in muscle_order
+            for compartment in COMPARTMENT_ORDER
+            if (
+                (df_image_summary["Muscle"] == muscle)
+                & (df_image_summary["Compartment"] == compartment)
+            ).any()
+        ]
+        bayesian_image_summary_mode = load_superplot_annotation_mode(
+            config_yaml=BAYESIAN_IMAGE_SUMMARY_CONFIG_YAML,
+        )
+        bayesian_image_summary_df = load_bayesian_superplot_annotations(
+            summary_csv=BAYESIAN_IMAGE_SUMMARY_CSV,
+        )
+        image_summary_metrics = sorted(
+            bayesian_image_summary_df["metric"].astype(str).unique().tolist()
+        )
+        image_summary_metric_specs = [
+            (metric, df_image_summary)
+            for metric in image_summary_metrics
+            if metric in df_image_summary.columns
+        ]
+        if image_summary_metric_specs:
+            generate_superplots_for_metrics(
+                metric_specs=image_summary_metric_specs,
+                save_dir=IMAGE_SUMMARY_FIGURES_DIR,
+                x="Muscle_Compartment",
+                hue="Condition",
+                block="Block",
+                x_order=image_summary_muscle_compartment_order,
+                hue_order=image_summary_conditions,
+                unit_dict=units,
+                summary_df=bayesian_image_summary_df,
+                annotation_mode=bayesian_image_summary_mode,
+            )
+    else:
+        print(
+            "Skipping image-summary superplots: expected exactly 2 conditions, found "
+            f"{len(image_summary_conditions)} ({image_summary_conditions})."
+        )
+else:
+    print("Skipping image-summary superplots: no image-summary CSVs were found.")
 
 
 # %% Run WT-vs-DMD statistical tests for each muscle-compartment group

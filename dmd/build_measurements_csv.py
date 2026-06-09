@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -13,15 +14,22 @@ import cv2
 import numpy as np
 import tifffile as tiff
 
-INPUT_ROOT = Path("/workspaces/mito-counter/data/DMD/Processed")
-OUTPUT_CSV = Path("/workspaces/mito-counter/data/DMD/results/measurements_cells.csv")
-OUTPUT_CLEANED_CSV = Path(
-    "/workspaces/mito-counter/data/DMD/results/measurements_cells_cleaned.csv"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+INPUT_ROOT = REPO_ROOT / "data" / "DMD" / "Processed"
+RESULTS_ROOT = REPO_ROOT / "data" / "DMD" / "results"
+OUTPUT_CSV = RESULTS_ROOT / "measurements.csv"
+OUTPUT_CLEANED_CSV = RESULTS_ROOT / "measurements_cleaned.csv"
+OUTPUT_SS_SUMMARY_CSV = RESULTS_ROOT / "measurments_cleaned_ss_summary.csv"
+OUTPUT_IMF_SUMMARY_CSV = (
+    RESULTS_ROOT / "measurments_cleaned_imf_summary.csv"
 )
 MIN_MAJOR_AXIS_PX = 30.0
 MIN_MINOR_AXIS_PX = 5.0
 REFERENCE_MAGNIFICATION = 6800.0
 REFERENCE_PIXEL_SIZE_UM = 0.0015396
+SS_THRESHOLD_NM = 1500.0
+SS_LABEL = "Sub-sarcolemmal (SS)"
+IMF_LABEL = "Intermyofibrillar (IMF)"
 
 CONDITION_MAP = {
     "WT": "Wildtype",
@@ -33,7 +41,7 @@ MUSCLE_MAP = {
     "EOM": "Extraocular Muscle",
 }
 
-BLOCK_RE = re.compile(r"(?:^|[^A-Z0-9])(TA|EOM)[\s_-]*([0-9]+)(?=[\s_-]|$)", re.IGNORECASE)
+DMD_BLOCK_PREFIX_RE = re.compile(r"^(TA|EOM)_(WT|DMD)_([0-9]+)_", re.IGNORECASE)
 MAGNIFICATION_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*[xX]")
 PIXEL_SIZE_KEYWORDS = {
     "pixel_size",
@@ -46,32 +54,32 @@ PIXEL_SIZE_KEYWORDS = {
     "x_scale",
     "y_scale",
 }
-UNIT_ALIASES = {
-    "um": 1.0,
-    "micrometer": 1.0,
-    "micrometers": 1.0,
-    "micrometre": 1.0,
-    "micrometres": 1.0,
-    "micron": 1.0,
-    "microns": 1.0,
-    "nm": 1e-3,
-    "nanometer": 1e-3,
-    "nanometers": 1e-3,
-    "nanometre": 1e-3,
-    "nanometres": 1e-3,
-    "mm": 1e3,
-    "millimeter": 1e3,
-    "millimeters": 1e3,
-    "millimetre": 1e3,
-    "millimetres": 1e3,
-    "pm": 1e-6,
-    "picometer": 1e-6,
-    "picometers": 1e-6,
-    "picometre": 1e-6,
-    "picometres": 1e-6,
-    "a": 1e-4,
-    "angstrom": 1e-4,
-    "angstroms": 1e-4,
+UNIT_ALIASES_TO_NM = {
+    "um": 1000.0,
+    "micrometer": 1000.0,
+    "micrometers": 1000.0,
+    "micrometre": 1000.0,
+    "micrometres": 1000.0,
+    "micron": 1000.0,
+    "microns": 1000.0,
+    "nm": 1.0,
+    "nanometer": 1.0,
+    "nanometers": 1.0,
+    "nanometre": 1.0,
+    "nanometres": 1.0,
+    "mm": 1_000_000.0,
+    "millimeter": 1_000_000.0,
+    "millimeters": 1_000_000.0,
+    "millimetre": 1_000_000.0,
+    "millimetres": 1_000_000.0,
+    "pm": 1e-3,
+    "picometer": 1e-3,
+    "picometers": 1e-3,
+    "picometre": 1e-3,
+    "picometres": 1e-3,
+    "a": 0.1,
+    "angstrom": 0.1,
+    "angstroms": 0.1,
 }
 
 
@@ -79,32 +87,35 @@ UNIT_ALIASES = {
 class ImageRecord:
     condition: str
     muscle: str
+    block_num: str
     image_label: str
     width_px: int
     height_px: int
     image_path: Path
     metadata_path: Path
     cell_mask_path: Path
-    pixel_size_um: float
+    pixel_size_nm: float
     pixel_size_source: str
     magnification: float | None
 
 
-def parse_block_number(path: Path) -> str:
-    """Extract the optional block number from a DMD metrics filename.
+def parse_dmd_block_prefix(image_label: str) -> str:
+    """Extract the block number from a DMD processed image filename prefix.
 
     Args:
-        path (Path): Metrics CSV path whose stem may contain tokens such as
-            ``TA_DMD_3-1200X`` or ``EOM_WT_2-890X``.
+        image_label (str): Processed image stem beginning with a normalized raw
+            block directory, such as ``TA_WT_1_`` or ``EOM_DMD_2_``.
 
     Returns:
-        str: Parsed block number as text, or an empty string when the filename
-        does not encode a block number.
+        str: Block number parsed from the leading DMD block-directory prefix.
     """
-    match = BLOCK_RE.search(path.stem)
-    if not match:
-        return ""
-    return match.group(2)
+    match = DMD_BLOCK_PREFIX_RE.match(image_label)
+    if match is None:
+        raise ValueError(
+            "Unable to parse DMD block number from processed image name. "
+            f"Expected prefix like 'TA_WT_1_' or 'EOM_DMD_2_': {image_label}"
+        )
+    return match.group(3)
 
 
 def parse_image_label(path: Path) -> str:
@@ -203,20 +214,20 @@ def normalize_unit_name(unit: str | None) -> str | None:
     return normalized
 
 
-def convert_to_um(value: float, unit: str | None) -> float | None:
-    """Convert a scalar value to micrometers when its unit is known.
+def convert_to_nm(value: float, unit: str | None) -> float | None:
+    """Convert a scalar value to nanometers when its unit is known.
 
     Args:
         value (float): Numeric value from metadata.
         unit (str | None): Unit associated with the value.
 
     Returns:
-        float | None: Converted micrometer value, or ``None`` when the unit is unknown.
+        float | None: Converted nanometer value, or ``None`` when the unit is unknown.
     """
     normalized = normalize_unit_name(unit)
     if normalized is None:
         return None
-    factor = UNIT_ALIASES.get(normalized)
+    factor = UNIT_ALIASES_TO_NM.get(normalized)
     if factor is None:
         return None
     return value * factor
@@ -283,13 +294,13 @@ def extract_magnification_from_filename(image_label: str) -> float | None:
 
 
 def find_pixel_size_from_dict(node: dict[str, Any]) -> float | None:
-    """Extract a micrometer-per-pixel value from a metadata mapping.
+    """Extract a nanometer-per-pixel value from a metadata mapping.
 
     Args:
         node (dict[str, Any]): Metadata mapping to inspect.
 
     Returns:
-        float | None: Micrometer-per-pixel value when the mapping stores one, otherwise ``None``.
+        float | None: Nanometer-per-pixel value when the mapping stores one, otherwise ``None``.
     """
     normalized_keys = {str(key).strip().lower().replace(" ", "_"): key for key in node}
     for normalized_key in PIXEL_SIZE_KEYWORDS:
@@ -302,11 +313,11 @@ def find_pixel_size_from_dict(node: dict[str, Any]) -> float | None:
             if value_float <= 0.0:
                 continue
             if normalized_key.endswith("_um"):
-                return value_float
+                return value_float * 1000.0
             if normalized_key.endswith("_nm"):
-                return value_float * 1e-3
-            if normalized_key == "pixelsize" and value_float < 1.0:
                 return value_float
+            if normalized_key in {"pixelsize", "scale"} and value_float < 1.0:
+                return value_float * 1000.0
             unit_candidates = [
                 node.get("units"),
                 node.get("unit"),
@@ -314,11 +325,9 @@ def find_pixel_size_from_dict(node: dict[str, Any]) -> float | None:
                 node.get("Unit"),
             ]
             for unit in unit_candidates:
-                converted = convert_to_um(value_float, unit if isinstance(unit, str) else None)
+                converted = convert_to_nm(value_float, unit if isinstance(unit, str) else None)
                 if converted is not None and converted > 0.0:
                     return converted
-            if normalized_key == "scale" and value_float < 1.0:
-                return value_float
     x_scale_key = normalized_keys.get("x_scale")
     y_scale_key = normalized_keys.get("y_scale")
     if x_scale_key is not None and y_scale_key is not None:
@@ -327,7 +336,7 @@ def find_pixel_size_from_dict(node: dict[str, Any]) -> float | None:
         if isinstance(x_scale, (int, float)) and isinstance(y_scale, (int, float)):
             if float(x_scale) > 0.0 and float(y_scale) > 0.0:
                 unit_value = node.get("units") or node.get("unit")
-                converted = convert_to_um(float(x_scale), unit_value if isinstance(unit_value, str) else None)
+                converted = convert_to_nm(float(x_scale), unit_value if isinstance(unit_value, str) else None)
                 if converted is not None:
                     return converted
     return None
@@ -340,14 +349,14 @@ def extract_pixel_size_from_json_metadata(metadata: dict[str, Any]) -> float | N
         metadata (dict[str, Any]): Parsed image sidecar metadata.
 
     Returns:
-        float | None: Micrometer-per-pixel value when metadata encodes it, otherwise ``None``.
+        float | None: Nanometer-per-pixel value when metadata encodes it, otherwise ``None``.
     """
     for value in walk_nested_values(metadata):
         if not isinstance(value, dict):
             continue
-        pixel_size_um = find_pixel_size_from_dict(value)
-        if pixel_size_um is not None and pixel_size_um > 0.0:
-            return pixel_size_um
+        pixel_size_nm = find_pixel_size_from_dict(value)
+        if pixel_size_nm is not None and pixel_size_nm > 0.0:
+            return pixel_size_nm
     return None
 
 
@@ -358,7 +367,7 @@ def extract_pixel_size_from_tiff_metadata(image_path: Path) -> float | None:
         image_path (Path): TIFF image path to inspect.
 
     Returns:
-        float | None: Micrometer-per-pixel value when TIFF metadata encodes it, otherwise ``None``.
+        float | None: Nanometer-per-pixel value when TIFF metadata encodes it, otherwise ``None``.
     """
     if not image_path.is_file():
         return None
@@ -371,15 +380,15 @@ def extract_pixel_size_from_tiff_metadata(image_path: Path) -> float | None:
             except json.JSONDecodeError:
                 parsed = None
             if isinstance(parsed, dict):
-                pixel_size_um = extract_pixel_size_from_json_metadata(parsed)
-                if pixel_size_um is not None:
-                    return pixel_size_um
+                pixel_size_nm = extract_pixel_size_from_json_metadata(parsed)
+                if pixel_size_nm is not None:
+                    return pixel_size_nm
 
         imagej_metadata = tif.imagej_metadata
         if isinstance(imagej_metadata, dict):
-            pixel_size_um = extract_pixel_size_from_json_metadata(imagej_metadata)
-            if pixel_size_um is not None:
-                return pixel_size_um
+            pixel_size_nm = extract_pixel_size_from_json_metadata(imagej_metadata)
+            if pixel_size_nm is not None:
+                return pixel_size_nm
 
         x_resolution_tag = page.tags.get("XResolution")
         resolution_unit_tag = page.tags.get("ResolutionUnit")
@@ -390,27 +399,27 @@ def extract_pixel_size_from_tiff_metadata(image_path: Path) -> float | None:
                 resolution_unit = int(resolution_unit_tag.value)
                 if pixels_per_unit > 0.0:
                     if resolution_unit == 2:
-                        return 25400.0 / pixels_per_unit
+                        return 25_400_000.0 / pixels_per_unit
                     if resolution_unit == 3:
-                        return 10000.0 / pixels_per_unit
+                        return 10_000_000.0 / pixels_per_unit
     return None
 
 
-def magnification_to_pixel_size_um(magnification: float) -> float:
+def magnification_to_pixel_size_nm(magnification: float) -> float:
     """Estimate pixel size from magnification using the existing 6800X calibration reference.
 
     Args:
         magnification (float): Microscope magnification for the image.
 
     Returns:
-        float: Estimated micrometers per pixel at the provided magnification.
+        float: Estimated nanometers per pixel at the provided magnification.
     """
     if magnification <= 0.0:
         raise ValueError(f"Magnification must be positive, got {magnification}.")
-    return REFERENCE_PIXEL_SIZE_UM * (REFERENCE_MAGNIFICATION / magnification)
+    return REFERENCE_PIXEL_SIZE_UM * 1000.0 * (REFERENCE_MAGNIFICATION / magnification)
 
 
-def resolve_pixel_size_um(metadata: dict[str, Any], image_label: str, image_path: Path) -> tuple[float, str, float | None]:
+def resolve_pixel_size_nm(metadata: dict[str, Any], image_label: str, image_path: Path) -> tuple[float, str, float | None]:
     """Resolve a per-image pixel size using JSON metadata, TIFF metadata, then magnification fallback.
 
     Args:
@@ -419,7 +428,7 @@ def resolve_pixel_size_um(metadata: dict[str, Any], image_label: str, image_path
         image_path (Path): TIFF image path used for TIFF-metadata fallback.
 
     Returns:
-        tuple[float, str, float | None]: Resolved micrometers-per-pixel value, a source label,
+        tuple[float, str, float | None]: Resolved nanometers-per-pixel value, a source label,
         and the magnification used or discovered during resolution.
     """
     magnification = extract_magnification_from_metadata(metadata)
@@ -430,13 +439,13 @@ def resolve_pixel_size_um(metadata: dict[str, Any], image_label: str, image_path
             ("analysis_metadata", load_json_file(analysis_metadata_path))
         )
     for source_name, metadata_source in metadata_sources:
-        pixel_size_um = extract_pixel_size_from_json_metadata(metadata_source)
-        if pixel_size_um is not None:
-            return pixel_size_um, source_name, magnification
+        pixel_size_nm = extract_pixel_size_from_json_metadata(metadata_source)
+        if pixel_size_nm is not None:
+            return pixel_size_nm, source_name, magnification
 
-    pixel_size_um = extract_pixel_size_from_tiff_metadata(image_path)
-    if pixel_size_um is not None:
-        return pixel_size_um, "tiff_metadata", magnification
+    pixel_size_nm = extract_pixel_size_from_tiff_metadata(image_path)
+    if pixel_size_nm is not None:
+        return pixel_size_nm, "tiff_metadata", magnification
 
     if magnification is None:
         magnification = extract_magnification_from_filename(image_label)
@@ -444,7 +453,7 @@ def resolve_pixel_size_um(metadata: dict[str, Any], image_label: str, image_path
         raise ValueError(
             f"Unable to resolve pixel size or magnification for image '{image_label}'."
         )
-    return magnification_to_pixel_size_um(magnification), "magnification_fallback", magnification
+    return magnification_to_pixel_size_nm(magnification), "magnification_fallback", magnification
 
 
 def load_image_records(input_root: Path) -> dict[tuple[str, str, str], ImageRecord]:
@@ -483,7 +492,8 @@ def load_image_records(input_root: Path) -> dict[tuple[str, str, str], ImageReco
 
         image_label = metadata_path.stem
         cell_mask_path = image_path.with_name(f"{image_label}_cells.tif")
-        pixel_size_um, pixel_size_source, magnification = resolve_pixel_size_um(
+        block_num = parse_dmd_block_prefix(image_label)
+        pixel_size_nm, pixel_size_source, magnification = resolve_pixel_size_nm(
             metadata=metadata,
             image_label=image_label,
             image_path=image_path,
@@ -492,13 +502,14 @@ def load_image_records(input_root: Path) -> dict[tuple[str, str, str], ImageReco
         record = ImageRecord(
             condition=condition,
             muscle=muscle,
+            block_num=block_num,
             image_label=image_label,
             width_px=int(shape[1]),
             height_px=int(shape[0]),
             image_path=image_path,
             metadata_path=metadata_path,
             cell_mask_path=cell_mask_path,
-            pixel_size_um=pixel_size_um,
+            pixel_size_nm=pixel_size_nm,
             pixel_size_source=pixel_size_source,
             magnification=magnification,
         )
@@ -521,6 +532,53 @@ def load_binary_mask(path: Path) -> np.ndarray:
     if mask.ndim != 2:
         raise ValueError(f"Expected a 2D cell mask, got shape {mask.shape} for {path}.")
     return mask > 0
+
+
+def load_cell_labels(path: Path) -> np.ndarray:
+    """Read a 2D TIFF cell mask as integer cell-instance labels.
+
+    Args:
+        path (Path): Cell-mask TIFF path.
+
+    Returns:
+        np.ndarray: Integer label image where background is ``0`` and positive
+        values identify cell instances. Binary masks are normalized to cell ``1``.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"Cell mask not found: {path}")
+    mask = tiff.imread(str(path))
+    if mask.ndim != 2:
+        raise ValueError(f"Expected a 2D cell mask, got shape {mask.shape} for {path}.")
+
+    positive_values = np.unique(mask[mask > 0])
+    if positive_values.size <= 1:
+        return (mask > 0).astype(np.int32)
+    return mask.astype(np.int32)
+
+
+def sample_cell_id(cell_labels: np.ndarray, x_px: float, y_px: float) -> int:
+    """Sample the cell ID at a centroid, falling back to the nearest cell pixel.
+
+    Args:
+        cell_labels (np.ndarray): Integer cell-label image.
+        x_px (float): X coordinate in image pixels.
+        y_px (float): Y coordinate in image pixels.
+
+    Returns:
+        int: Positive cell ID assigned to the centroid.
+    """
+    row = int(np.clip(round(y_px), 0, cell_labels.shape[0] - 1))
+    col = int(np.clip(round(x_px), 0, cell_labels.shape[1] - 1))
+    cell_id = int(cell_labels[row, col])
+    if cell_id > 0:
+        return cell_id
+
+    cell_pixels = np.argwhere(cell_labels > 0)
+    if cell_pixels.size == 0:
+        raise ValueError("Cell-label mask does not contain any positive cell IDs.")
+    distances = np.sum((cell_pixels - np.array([row, col])) ** 2, axis=1)
+    nearest_row, nearest_col = cell_pixels[int(np.argmin(distances))]
+    return int(cell_labels[nearest_row, nearest_col])
 
 
 def compute_external_background(mask: np.ndarray) -> np.ndarray:
@@ -547,6 +605,40 @@ def compute_external_background(mask: np.ndarray) -> np.ndarray:
     return np.isin(labels, label_values)
 
 
+def build_cell_geometry_from_mask(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Build a cell mask and per-pixel distance map to external background.
+
+    Args:
+        mask (np.ndarray): Boolean mask where ``True`` marks one cell or a union
+            of cell pixels.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Boolean cell mask and Float32 distance map
+        in pixels, ignoring enclosed internal black regions.
+    """
+    external_background = compute_external_background(mask)
+    if not np.any(external_background):
+        return mask, np.full(mask.shape, np.inf, dtype=np.float32)
+    distance_input = np.where(external_background, 0, 1).astype(np.uint8)
+    distance_map_px = cv2.distanceTransform(
+        distance_input, distanceType=cv2.DIST_L2, maskSize=5
+    )
+    return mask, distance_map_px
+
+
+def build_cell_geometry(cell_mask_path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Build combined-cell geometry from a cell-mask TIFF path.
+
+    Args:
+        cell_mask_path (Path): TIFF mask where non-zero pixels mark cell regions.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Boolean foreground mask and Float32 distance map
+        in pixels, ignoring enclosed internal black regions.
+    """
+    return build_cell_geometry_from_mask(load_binary_mask(cell_mask_path))
+
+
 def build_distance_map_px(cell_mask_path: Path) -> np.ndarray:
     """Build a per-pixel distance map to the nearest external background pixel.
 
@@ -556,12 +648,7 @@ def build_distance_map_px(cell_mask_path: Path) -> np.ndarray:
     Returns:
         np.ndarray: Float32 distance map in pixels, ignoring enclosed internal black regions.
     """
-    mask = load_binary_mask(cell_mask_path)
-    external_background = compute_external_background(mask)
-    if not np.any(external_background):
-        return np.full(mask.shape, np.inf, dtype=np.float32)
-    distance_input = np.where(external_background, 0, 1).astype(np.uint8)
-    return cv2.distanceTransform(distance_input, distanceType=cv2.DIST_L2, maskSize=5)
+    return build_cell_geometry(cell_mask_path)[1]
 
 
 def sample_distance_map(distance_map_px: np.ndarray, x_px: float, y_px: float) -> float:
@@ -580,24 +667,49 @@ def sample_distance_map(distance_map_px: np.ndarray, x_px: float, y_px: float) -
     return float(distance_map_px[row, col])
 
 
-def segmentation_touches_cell_edge(
+def segmentation_touches_image_edge(
     *,
-    centroid_to_membrane_px: float,
+    centroid_x_px: float,
+    centroid_y_px: float,
     major_axis_px: float,
+    width_px: int,
+    height_px: int,
 ) -> bool:
-    """Estimate whether an instance reaches the cell membrane.
+    """Estimate whether a segmented object touches image borders.
 
     Args:
-        centroid_to_membrane_px (float): Centroid distance to the nearest external background pixel.
-        major_axis_px (float): Major axis length of the instance in pixels.
+        centroid_x_px (float): Object centroid x-coordinate in pixels.
+        centroid_y_px (float): Object centroid y-coordinate in pixels.
+        major_axis_px (float): Object major axis length in pixels.
+        width_px (int): Image width in pixels.
+        height_px (int): Image height in pixels.
 
     Returns:
-        bool: ``True`` when the centroid-to-membrane distance is less than or equal to half
-        the major axis length, otherwise ``False``.
+        bool: ``True`` when centroid +/- major-axis half-width reaches or exceeds
+        any image boundary; otherwise ``False``.
     """
-    if not np.isfinite(centroid_to_membrane_px):
-        return False
-    return centroid_to_membrane_px <= (major_axis_px / 2.0)
+    half_major = major_axis_px / 2.0
+    left = centroid_x_px - half_major
+    right = centroid_x_px + half_major
+    top = centroid_y_px - half_major
+    bottom = centroid_y_px + half_major
+    return left <= 0.0 or right >= (width_px - 1) or top <= 0.0 or bottom >= (height_px - 1)
+
+
+def make_compartment(distance_to_membrane_nm: float) -> str:
+    """Classify a mitochondrion as SS or IMF from its membrane distance.
+
+    Args:
+        distance_to_membrane_nm (float): Distance from the instance centroid to the
+            cell membrane in nanometers.
+
+    Returns:
+        str: ``Sub-sarcolemmal (SS)`` when the distance is at most 1500 nm,
+        otherwise ``Intermyofibrillar (IMF)``.
+    """
+    if distance_to_membrane_nm <= SS_THRESHOLD_NM:
+        return SS_LABEL
+    return IMF_LABEL
 
 
 def classify_image_region(
@@ -631,12 +743,254 @@ def classify_image_region(
     return "center" if inside_x and inside_y else "periphery"
 
 
+def parse_optional_float(text: str | None) -> float | None:
+    """Parse optional CSV text into a float.
+
+    Args:
+        text (str | None): CSV value that may be blank or missing.
+
+    Returns:
+        float | None: Parsed numeric value, or ``None`` when the value is empty.
+    """
+    if text is None or text == "":
+        return None
+    return float(text)
+
+
+def numeric_values(rows: list[dict[str, str]], column: str) -> list[float]:
+    """Collect numeric values for one CSV column.
+
+    Args:
+        rows (list[dict[str, str]]): CSV rows from one image-compartment group.
+        column (str): Column name to extract from each row.
+
+    Returns:
+        list[float]: Non-empty values parsed as floats.
+    """
+    values: list[float] = []
+    for row in rows:
+        value = parse_optional_float(row.get(column))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def mean_or_none(values: list[float]) -> float | None:
+    """Calculate the arithmetic mean for a list of values.
+
+    Args:
+        values (list[float]): Numeric values to average.
+
+    Returns:
+        float | None: Mean value, or ``None`` when no values are provided.
+    """
+    if not values:
+        return None
+    return sum(values) / float(len(values))
+
+
+def sum_or_none(values: list[float]) -> float | None:
+    """Calculate the sum for a list of values.
+
+    Args:
+        values (list[float]): Numeric values to sum.
+
+    Returns:
+        float | None: Summed value, or ``None`` when no values are provided.
+    """
+    if not values:
+        return None
+    return sum(values)
+
+
+def coefficient_of_variation(values: list[float]) -> float | None:
+    """Calculate the population coefficient of variation.
+
+    Args:
+        values (list[float]): Numeric values whose variation should be summarized.
+
+    Returns:
+        float | None: Standard deviation divided by the mean, or ``None`` when
+        fewer than two values are available or the mean is zero.
+    """
+    if len(values) < 2:
+        return None
+    mean_value = mean_or_none(values)
+    if mean_value is None or mean_value == 0.0:
+        return None
+    variance = sum((value - mean_value) ** 2 for value in values) / float(len(values))
+    return math.sqrt(variance) / mean_value
+
+
+def format_optional_float(value: float | None, digits: int = 8) -> str:
+    """Format optional floating-point output for CSV writing.
+
+    Args:
+        value (float | None): Numeric value to format.
+        digits (int): Number of digits after the decimal point.
+
+    Returns:
+        str: Formatted decimal text, or an empty string when ``value`` is ``None``.
+    """
+    if value is None:
+        return ""
+    return f"{value:.{digits}f}"
+
+
+def pairwise_distances_nm(coords_nm: list[tuple[float, float]]) -> list[float]:
+    """Calculate unique pairwise centroid distances in nanometers.
+
+    Args:
+        coords_nm (list[tuple[float, float]]): Centroid coordinates as ``(x, y)``
+            pairs in nanometers.
+
+    Returns:
+        list[float]: Distances for each unique unordered centroid pair.
+    """
+    distances: list[float] = []
+    for i, (x_a, y_a) in enumerate(coords_nm):
+        for x_b, y_b in coords_nm[i + 1 :]:
+            distances.append(math.hypot(x_a - x_b, y_a - y_b))
+    return distances
+
+
+def spatial_radii_nm(width_nm: float, height_nm: float) -> list[float]:
+    """Build evenly spaced radii for compartment-level spatial summaries.
+
+    Args:
+        width_nm (float): Physical image width in nanometers.
+        height_nm (float): Physical image height in nanometers.
+
+    Returns:
+        list[float]: Positive radii up to one quarter of the shorter image side.
+    """
+    max_radius = min(width_nm, height_nm) * 0.25
+    if max_radius <= 0.0:
+        return []
+    step = max_radius / 20.0
+    return [step * float(index) for index in range(1, 21)]
+
+
+def trapezoid_integral(x_values: list[float], y_values: list[float]) -> float | None:
+    """Integrate sampled values with the trapezoid rule.
+
+    Args:
+        x_values (list[float]): Monotonic x-axis sample positions.
+        y_values (list[float]): Function values sampled at ``x_values``.
+
+    Returns:
+        float | None: Trapezoid-rule integral, or ``None`` when fewer than two
+        samples are provided.
+    """
+    if len(x_values) < 2 or len(x_values) != len(y_values):
+        return None
+    total = 0.0
+    for index in range(1, len(x_values)):
+        width = x_values[index] - x_values[index - 1]
+        total += width * (y_values[index] + y_values[index - 1]) / 2.0
+    return total
+
+
+def ripley_l_integral(
+    coords_nm: list[tuple[float, float]],
+    compartment_area_nm2: float,
+    radii_nm: list[float],
+) -> float | None:
+    """Integrate signed Ripley L-function deviation from random placement.
+
+    Args:
+        coords_nm (list[tuple[float, float]]): Cleaned centroid coordinates in nanometers.
+        compartment_area_nm2 (float): Physical SS or IMF compartment area in square nanometers.
+        radii_nm (list[float]): Radii at which to evaluate the L-function.
+
+    Returns:
+        float | None: Integral of ``L(r) - r`` across radii, or ``None`` when the
+        estimate cannot be computed.
+    """
+    count = len(coords_nm)
+    if count < 2 or compartment_area_nm2 <= 0.0 or not radii_nm:
+        return None
+    distances = pairwise_distances_nm(coords_nm)
+    deviations = [0.0]
+    for radius in radii_nm:
+        unordered_pairs = sum(1 for distance in distances if distance <= radius)
+        ordered_pairs = 2.0 * float(unordered_pairs)
+        k_value = compartment_area_nm2 * ordered_pairs / float(count * (count - 1))
+        l_value = math.sqrt(max(k_value, 0.0) / math.pi)
+        deviations.append(l_value - radius)
+    return trapezoid_integral([0.0, *radii_nm], deviations)
+
+
+def pair_correlation_integral(
+    coords_nm: list[tuple[float, float]],
+    compartment_area_nm2: float,
+    radii_nm: list[float],
+) -> float | None:
+    """Integrate signed pair-correlation deviation from random placement.
+
+    Args:
+        coords_nm (list[tuple[float, float]]): Cleaned centroid coordinates in nanometers.
+        compartment_area_nm2 (float): Physical SS or IMF compartment area in square nanometers.
+        radii_nm (list[float]): Annular outer radii used to estimate ``g(r)``.
+
+    Returns:
+        float | None: Integral of ``g(r) - 1`` across annular radii, or ``None``
+        when the estimate cannot be computed.
+    """
+    count = len(coords_nm)
+    if count < 2 or compartment_area_nm2 <= 0.0 or not radii_nm:
+        return None
+    distances = pairwise_distances_nm(coords_nm)
+    previous_radius = 0.0
+    total = 0.0
+    for radius in radii_nm:
+        annulus_area = math.pi * (radius**2 - previous_radius**2)
+        if annulus_area <= 0.0:
+            previous_radius = radius
+            continue
+        unordered_pairs = sum(
+            1 for distance in distances if previous_radius < distance <= radius
+        )
+        ordered_pairs = 2.0 * float(unordered_pairs)
+        g_value = compartment_area_nm2 * ordered_pairs / (
+            float(count * (count - 1)) * annulus_area
+        )
+        total += (g_value - 1.0) * (radius - previous_radius)
+        previous_radius = radius
+    return total
+
+
+def compartment_areas_nm2(
+    image_record: ImageRecord,
+    mask: np.ndarray,
+    distance_map_px: np.ndarray,
+) -> dict[str, float]:
+    """Calculate SS and IMF cell-mask areas in square nanometers.
+
+    Args:
+        image_record (ImageRecord): Image metadata containing the pixel calibration.
+        mask (np.ndarray): Boolean cell mask where ``True`` marks cell pixels.
+        distance_map_px (np.ndarray): Distance to external background in pixels.
+
+    Returns:
+        dict[str, float]: Mapping from compartment label to metadata-calibrated area.
+    """
+    threshold_px = SS_THRESHOLD_NM / image_record.pixel_size_nm
+    ss_pixels = mask & (distance_map_px <= threshold_px)
+    imf_pixels = mask & (distance_map_px > threshold_px)
+    pixel_area_nm2 = image_record.pixel_size_nm**2
+    return {
+        SS_LABEL: float(np.count_nonzero(ss_pixels)) * pixel_area_nm2,
+        IMF_LABEL: float(np.count_nonzero(imf_pixels)) * pixel_area_nm2,
+    }
+
+
 def clean_measurements_csv(
     measurements_csv: Path,
     cleaned_csv: Path,
     image_records: dict[tuple[str, str, str], ImageRecord],
 ) -> tuple[int, int, int, int, int]:
-    """Create a cleaned measurements CSV using size, cell-edge, and connectivity filters.
+    """Create a cleaned measurements CSV using size, image-edge, and connectivity filters.
 
     Args:
         measurements_csv (Path): Source measurements CSV path.
@@ -675,10 +1029,10 @@ def clean_measurements_csv(
                 if record is None:
                     raise KeyError(f"Missing image metadata for: {image_key}")
 
-                major_axis_um = float(get_first_value(row, ["Major_axis_length"]))
-                minor_axis_um = float(get_first_value(row, ["Minor_axis_length"]))
-                major_axis_px = major_axis_um / record.pixel_size_um
-                minor_axis_px = minor_axis_um / record.pixel_size_um
+                major_axis_nm = float(get_first_value(row, ["Major_axis_length"]))
+                minor_axis_nm = float(get_first_value(row, ["Minor_axis_length"]))
+                major_axis_px = major_axis_nm / record.pixel_size_nm
+                minor_axis_px = minor_axis_nm / record.pixel_size_nm
                 if (
                     major_axis_px <= MIN_MAJOR_AXIS_PX
                     or minor_axis_px <= MIN_MINOR_AXIS_PX
@@ -686,13 +1040,16 @@ def clean_measurements_csv(
                     removed_axis_size += 1
                     continue
 
-                membrane_distance_um = float(
-                    get_first_value(row, ["Distance_to_cell_membrane"])
-                )
-                membrane_distance_px = membrane_distance_um / record.pixel_size_um
-                if segmentation_touches_cell_edge(
-                    centroid_to_membrane_px=membrane_distance_px,
+                centroid_text = get_first_value(row, ["Centroid", "centroid"])
+                centroid_x_nm, centroid_y_nm = parse_centroid(centroid_text)
+                centroid_x_px = centroid_x_nm / record.pixel_size_nm
+                centroid_y_px = centroid_y_nm / record.pixel_size_nm
+                if segmentation_touches_image_edge(
+                    centroid_x_px=centroid_x_px,
+                    centroid_y_px=centroid_y_px,
                     major_axis_px=major_axis_px,
+                    width_px=record.width_px,
+                    height_px=record.height_px,
                 ):
                     removed_edge_touch += 1
                     continue
@@ -718,6 +1075,241 @@ def clean_measurements_csv(
     )
 
 
+def summarize_compartment_rows(
+    rows: list[dict[str, str]],
+    image_record: ImageRecord,
+    compartment: str,
+    compartment_area_nm2: float,
+    cell_area_nm2: float,
+) -> dict[str, str]:
+    """Summarize cleaned instance rows for one cell compartment.
+
+    Args:
+        rows (list[dict[str, str]]): Cleaned measurement rows belonging to one cell compartment.
+        image_record (ImageRecord): Metadata and calibration for the source image.
+        compartment (str): Compartment label being summarized.
+        compartment_area_nm2 (float): Physical compartment area in square nanometers.
+        cell_area_nm2 (float): Physical cell-mask area in square nanometers.
+
+    Returns:
+        dict[str, str]: CSV-ready compartment summary values.
+    """
+    width_nm = float(image_record.width_px) * image_record.pixel_size_nm
+    height_nm = float(image_record.height_px) * image_record.pixel_size_nm
+    center_rows = [
+        row for row in rows if row.get("Image_Region", "").strip().lower() == "center"
+    ]
+    coords_nm = [
+        parse_centroid(get_first_value(row, ["Centroid", "centroid"])) for row in rows
+    ]
+    radii_nm = spatial_radii_nm(width_nm, height_nm)
+    instance_count = len(rows)
+    density = (
+        float(instance_count) / compartment_area_nm2
+        if compartment_area_nm2 > 0.0
+        else None
+    )
+
+    return {
+        "Compartment": compartment,
+        "Density": format_optional_float(density, digits=12),
+        "Instance_count": str(instance_count),
+        "Zoom": format_optional_float(image_record.magnification, digits=6),
+        "Image_width_px": str(image_record.width_px),
+        "Image_height_px": str(image_record.height_px),
+        "Pixel_size_nm": format_optional_float(image_record.pixel_size_nm, digits=8),
+        "Cell_area_nm2": format_optional_float(cell_area_nm2, digits=8),
+        "Compartment_area_nm2": format_optional_float(compartment_area_nm2, digits=8),
+        "Area_sum": format_optional_float(sum_or_none(numeric_values(rows, "Area"))),
+        "Corrected_area_sum": format_optional_float(
+            sum_or_none(numeric_values(rows, "Corrected_area"))
+        ),
+        "Minimum_Feret_Diameter_sum": format_optional_float(
+            sum_or_none(numeric_values(rows, "Minimum_Feret_Diameter")), digits=6
+        ),
+        "Minor_axis_length_sum": format_optional_float(
+            sum_or_none(numeric_values(rows, "Minor_axis_length")), digits=6
+        ),
+        "Area_mean": format_optional_float(mean_or_none(numeric_values(rows, "Area"))),
+        "Corrected_area_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Corrected_area"))
+        ),
+        "Minimum_Feret_Diameter_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Minimum_Feret_Diameter")), digits=6
+        ),
+        "Major_axis_length_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Major_axis_length")), digits=6
+        ),
+        "Minor_axis_length_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Minor_axis_length")), digits=6
+        ),
+        "Elongation_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Elongation")), digits=6
+        ),
+        "Circularity_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Circularity")), digits=6
+        ),
+        "Solidity_mean": format_optional_float(
+            mean_or_none(numeric_values(rows, "Solidity")), digits=6
+        ),
+        "NND_center_mean": format_optional_float(
+            mean_or_none(numeric_values(center_rows, "NND")), digits=6
+        ),
+        "3NND_center_mean": format_optional_float(
+            mean_or_none(numeric_values(center_rows, "3NND")), digits=6
+        ),
+        "5NND_center_mean": format_optional_float(
+            mean_or_none(numeric_values(center_rows, "5NND")), digits=6
+        ),
+        "Voronoi_Cell_Area_center_mean": format_optional_float(
+            mean_or_none(numeric_values(center_rows, "Voronoi_Cell_Area"))
+        ),
+        "Voronoi_Cell_Area_center_cv": format_optional_float(
+            coefficient_of_variation(numeric_values(center_rows, "Voronoi_Cell_Area")),
+            digits=8,
+        ),
+        "Ripley_L_integral": format_optional_float(
+            ripley_l_integral(coords_nm, compartment_area_nm2, radii_nm)
+        ),
+        "Pair_Correlation_integral": format_optional_float(
+            pair_correlation_integral(coords_nm, compartment_area_nm2, radii_nm)
+        ),
+    }
+
+
+def write_compartment_summary_csv(
+    *,
+    cleaned_csv: Path,
+    summary_csv: Path,
+    image_records: dict[tuple[str, str, str], ImageRecord],
+    compartment: str,
+) -> int:
+    """Write one cleaned-measurement summary row per cell for one compartment.
+
+    Args:
+        cleaned_csv (Path): Cleaned instance-level measurements CSV path.
+        summary_csv (Path): Destination compartment summary CSV path.
+        image_records (dict[tuple[str, str, str], ImageRecord]): Per-image metadata
+            keyed by ``(Condition, Muscle, image)``.
+        compartment (str): Compartment label to summarize.
+
+    Returns:
+        int: Number of compartment summary rows written.
+    """
+    grouped_rows: dict[tuple[str, str, str, str, str, str], list[dict[str, str]]] = {}
+    with open(cleaned_csv, "r", newline="", encoding="utf-8") as in_handle:
+        reader = csv.DictReader(in_handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"Missing CSV header in: {cleaned_csv}")
+        for row in reader:
+            condition = get_first_value(row, ["Condition"])
+            muscle = get_first_value(row, ["Muscle"])
+            block = row.get("Block", "")
+            image = get_first_value(row, ["image"])
+            cell_id = get_first_value(row, ["Cell_id"])
+            row_compartment = get_first_value(row, ["Compartment"])
+            if row_compartment == compartment:
+                grouped_rows.setdefault(
+                    (condition, muscle, block, image, cell_id, compartment), []
+                ).append(row)
+
+    fieldnames = [
+        "Condition",
+        "Muscle",
+        "Block",
+        "image",
+        "Cell_id",
+        "Compartment",
+        "Density",
+        "Instance_count",
+        "Zoom",
+        "Image_width_px",
+        "Image_height_px",
+        "Pixel_size_nm",
+        "Cell_area_nm2",
+        "Compartment_area_nm2",
+        "Area_sum",
+        "Corrected_area_sum",
+        "Minimum_Feret_Diameter_sum",
+        "Minor_axis_length_sum",
+        "Area_mean",
+        "Corrected_area_mean",
+        "Minimum_Feret_Diameter_mean",
+        "Major_axis_length_mean",
+        "Minor_axis_length_mean",
+        "Elongation_mean",
+        "Circularity_mean",
+        "Solidity_mean",
+        "NND_center_mean",
+        "3NND_center_mean",
+        "5NND_center_mean",
+        "Voronoi_Cell_Area_center_mean",
+        "Voronoi_Cell_Area_center_cv",
+        "Ripley_L_integral",
+        "Pair_Correlation_integral",
+    ]
+
+    cell_label_cache: dict[Path, np.ndarray] = {}
+    cell_geometry_cache: dict[tuple[Path, int], tuple[np.ndarray, np.ndarray]] = {}
+    summary_csv.parent.mkdir(parents=True, exist_ok=True)
+    rows_written = 0
+    with open(summary_csv, "w", newline="", encoding="utf-8") as out_handle:
+        writer = csv.DictWriter(out_handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for (
+            condition,
+            muscle,
+            block,
+            image,
+            cell_id_text,
+            _,
+        ), rows in sorted(grouped_rows.items()):
+            image_record = image_records.get((condition, muscle, image))
+            if image_record is None:
+                raise KeyError(
+                    f"Missing image metadata for: {(condition, muscle, image)}"
+                )
+            if image_record.cell_mask_path not in cell_label_cache:
+                cell_label_cache[image_record.cell_mask_path] = load_cell_labels(
+                    image_record.cell_mask_path
+                )
+            cell_labels = cell_label_cache[image_record.cell_mask_path]
+            if cell_labels.shape != (image_record.height_px, image_record.width_px):
+                raise ValueError(
+                    "Cell-mask shape does not match metadata shape for "
+                    f"{image_record.cell_mask_path}: mask={cell_labels.shape}, "
+                    f"metadata={(image_record.height_px, image_record.width_px)}"
+                )
+            cell_id = int(cell_id_text)
+            geometry_key = (image_record.cell_mask_path, cell_id)
+            if geometry_key not in cell_geometry_cache:
+                cell_geometry_cache[geometry_key] = build_cell_geometry_from_mask(
+                    cell_labels == cell_id
+                )
+            mask, distance_map_px = cell_geometry_cache[geometry_key]
+            areas_nm2 = compartment_areas_nm2(image_record, mask, distance_map_px)
+            cell_area_nm2 = float(np.count_nonzero(mask)) * (image_record.pixel_size_nm**2)
+            summary = summarize_compartment_rows(
+                rows=rows,
+                image_record=image_record,
+                compartment=compartment,
+                compartment_area_nm2=areas_nm2[compartment],
+                cell_area_nm2=cell_area_nm2,
+            )
+            writer.writerow(
+                {
+                    "Condition": condition,
+                    "Muscle": muscle,
+                    "Block": block,
+                    "image": image,
+                    "Cell_id": cell_id_text,
+                    **summary,
+                }
+            )
+            rows_written += 1
+    return rows_written
+
+
 def build_output_row(
     *,
     row: dict[str, str],
@@ -725,7 +1317,9 @@ def build_output_row(
     muscle: str,
     block_num: str,
     image_label: str,
-    pixel_size_um: float,
+    cell_id: int,
+    pixel_size_nm: float,
+    zoom: float | None,
     membrane_distance_px: float,
     image_width_px: int,
     image_height_px: int,
@@ -736,9 +1330,11 @@ def build_output_row(
         row (dict[str, str]): Raw metrics row from a per-image CSV file.
         condition (str): Normalized condition label.
         muscle (str): Normalized muscle label.
-        block_num (str): Parsed block number or an empty string.
+        block_num (str): Block number parsed from the processed image filename prefix.
         image_label (str): Image stem without file extension.
-        pixel_size_um (float): Micrometers per pixel for this image.
+        cell_id (int): Positive cell-instance label assigned to this mitochondrion.
+        pixel_size_nm (float): Nanometers per pixel for this image.
+        zoom (float | None): Microscope zoom/magnification for this image.
         membrane_distance_px (float): Centroid-to-membrane distance in pixels.
         image_width_px (int): Image width in pixels from metadata.
         image_height_px (int): Image height in pixels from metadata.
@@ -748,11 +1344,11 @@ def build_output_row(
     """
     centroid_text = get_first_value(row, ["Centroid", "centroid"])
     cx_px, cy_px = parse_centroid(centroid_text)
-    cx_um = cx_px * pixel_size_um
-    cy_um = cy_px * pixel_size_um
+    cx_nm = cx_px * pixel_size_nm
+    cy_nm = cy_px * pixel_size_nm
 
     area_text = get_first_value(row, ["Area", "area"])
-    area_um2 = float(area_text) * (pixel_size_um ** 2)
+    area_nm2 = float(area_text) * (pixel_size_nm ** 2)
     corrected_area_text = get_first_value(
         row, ["Corrected_area", "corrected_area"], required=False
     )
@@ -784,68 +1380,71 @@ def build_output_row(
     fifth_nnd_val = maybe_float(fifth_nnd_text)
     voronoi_area_val = maybe_float(voronoi_area_text)
 
-    corrected_area_um2 = (
-        corrected_area_val * (pixel_size_um ** 2)
+    corrected_area_nm2 = (
+        corrected_area_val * (pixel_size_nm ** 2)
         if corrected_area_val is not None
         else None
     )
-    major_um = major_val * pixel_size_um if major_val is not None else None
-    minor_um = minor_val * pixel_size_um if minor_val is not None else None
-    min_feret_um = min_feret_val * pixel_size_um if min_feret_val is not None else None
-    nnd_um = nnd_val * pixel_size_um if nnd_val is not None else None
-    third_nnd_um = (
-        third_nnd_val * pixel_size_um if third_nnd_val is not None else None
+    major_nm = major_val * pixel_size_nm if major_val is not None else None
+    minor_nm = minor_val * pixel_size_nm if minor_val is not None else None
+    min_feret_nm = min_feret_val * pixel_size_nm if min_feret_val is not None else None
+    nnd_nm = nnd_val * pixel_size_nm if nnd_val is not None else None
+    third_nnd_nm = (
+        third_nnd_val * pixel_size_nm if third_nnd_val is not None else None
     )
-    fifth_nnd_um = (
-        fifth_nnd_val * pixel_size_um if fifth_nnd_val is not None else None
+    fifth_nnd_nm = (
+        fifth_nnd_val * pixel_size_nm if fifth_nnd_val is not None else None
     )
-    voronoi_area_um2 = (
-        voronoi_area_val * (pixel_size_um ** 2)
+    voronoi_area_nm2 = (
+        voronoi_area_val * (pixel_size_nm ** 2)
         if voronoi_area_val is not None
         else None
     )
-    membrane_distance_um = membrane_distance_px * pixel_size_um
+    membrane_distance_nm = membrane_distance_px * pixel_size_nm
 
     return {
         "Condition": condition,
         "Muscle": muscle,
         "Block": block_num,
         "image": image_label,
+        "Zoom": "" if zoom is None else f"{zoom:.6f}",
         "Id": get_first_value(row, ["Id", "id"]),
-        "Centroid": f"({cx_um:.6f}, {cy_um:.6f})",
+        "Cell_id": str(cell_id),
+        "Centroid": f"({cx_nm:.6f}, {cy_nm:.6f})",
         "Image_Region": classify_image_region(
             centroid_x_px=cx_px,
             centroid_y_px=cy_px,
             width_px=image_width_px,
             height_px=image_height_px,
         ),
-        "Area": f"{area_um2:.8f}",
+        "Area": f"{area_nm2:.8f}",
         "Corrected_area": ""
-        if corrected_area_um2 is None
-        else f"{corrected_area_um2:.8f}",
+        if corrected_area_nm2 is None
+        else f"{corrected_area_nm2:.8f}",
         "Major_axis_length": ""
-        if major_um is None
-        else f"{major_um:.6f}",
+        if major_nm is None
+        else f"{major_nm:.6f}",
         "Minor_axis_length": ""
-        if minor_um is None
-        else f"{minor_um:.6f}",
+        if minor_nm is None
+        else f"{minor_nm:.6f}",
         "Minimum_Feret_Diameter": ""
-        if min_feret_um is None
-        else f"{min_feret_um:.6f}",
+        if min_feret_nm is None
+        else f"{min_feret_nm:.6f}",
         "Elongation": get_first_value(row, ["Elongation", "Aspect Ratio (Elongation)"]),
         "Circularity": get_first_value(row, ["Circularity", "Circularity (Form Factor)"]),
         "Solidity": get_first_value(row, ["Solidity", "Solidity (Branching)"]),
-        "NND": "" if nnd_um is None else f"{nnd_um:.6f}",
-        "3NND": "" if third_nnd_um is None else f"{third_nnd_um:.6f}",
-        "5NND": "" if fifth_nnd_um is None else f"{fifth_nnd_um:.6f}",
+        "NND": "" if nnd_nm is None else f"{nnd_nm:.6f}",
+        "3NND": "" if third_nnd_nm is None else f"{third_nnd_nm:.6f}",
+        "5NND": "" if fifth_nnd_nm is None else f"{fifth_nnd_nm:.6f}",
         "Voronoi_Cell_Area": ""
-        if voronoi_area_um2 is None
-        else f"{voronoi_area_um2:.8f}",
+        if voronoi_area_nm2 is None
+        else f"{voronoi_area_nm2:.8f}",
         "Connected_parts": get_first_value(
             row, ["Connected_parts", "connected_parts"], required=False
         )
         or "1",
-        "Distance_to_cell_membrane": f"{membrane_distance_um:.6f}",
+        "Distance_to_cell_membrane": f"{membrane_distance_nm:.6f}",
+        "Compartment": make_compartment(membrane_distance_nm),
     }
 
 
@@ -889,7 +1488,9 @@ def main() -> None:
         "Muscle",
         "Block",
         "image",
+        "Zoom",
         "Id",
+        "Cell_id",
         "Centroid",
         "Image_Region",
         "Area",
@@ -906,9 +1507,11 @@ def main() -> None:
         "Voronoi_Cell_Area",
         "Connected_parts",
         "Distance_to_cell_membrane",
+        "Compartment",
     ]
 
-    distance_cache: dict[Path, np.ndarray] = {}
+    cell_label_cache: dict[Path, np.ndarray] = {}
+    cell_geometry_cache: dict[tuple[Path, int], tuple[np.ndarray, np.ndarray]] = {}
     pixel_size_source_counts: Counter[str] = Counter()
 
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as out_handle:
@@ -928,7 +1531,6 @@ def main() -> None:
             if condition is None or muscle is None:
                 raise ValueError(f"Unknown condition or muscle in path: {metrics_path}")
 
-            block_num = parse_block_number(metrics_path)
             image_label = parse_image_label(metrics_path)
             image_key = (condition, muscle, image_label)
             record = image_records.get(image_key)
@@ -938,15 +1540,15 @@ def main() -> None:
             if record.width_px <= 0 or record.height_px <= 0:
                 raise ValueError(f"Invalid image shape for: {record.metadata_path}")
 
-            if record.cell_mask_path not in distance_cache:
-                distance_cache[record.cell_mask_path] = build_distance_map_px(
+            if record.cell_mask_path not in cell_label_cache:
+                cell_label_cache[record.cell_mask_path] = load_cell_labels(
                     record.cell_mask_path
                 )
-            distance_map_px = distance_cache[record.cell_mask_path]
-            if distance_map_px.shape != (record.height_px, record.width_px):
+            cell_labels = cell_label_cache[record.cell_mask_path]
+            if cell_labels.shape != (record.height_px, record.width_px):
                 raise ValueError(
                     "Cell-mask shape does not match metadata shape for "
-                    f"{record.cell_mask_path}: mask={distance_map_px.shape}, "
+                    f"{record.cell_mask_path}: mask={cell_labels.shape}, "
                     f"metadata={(record.height_px, record.width_px)}"
                 )
 
@@ -957,15 +1559,24 @@ def main() -> None:
                 for row in reader:
                     centroid_text = get_first_value(row, ["Centroid", "centroid"])
                     cx_px, cy_px = parse_centroid(centroid_text)
+                    cell_id = sample_cell_id(cell_labels, cx_px, cy_px)
+                    geometry_key = (record.cell_mask_path, cell_id)
+                    if geometry_key not in cell_geometry_cache:
+                        cell_geometry_cache[geometry_key] = build_cell_geometry_from_mask(
+                            cell_labels == cell_id
+                        )
+                    _, distance_map_px = cell_geometry_cache[geometry_key]
                     membrane_distance_px = sample_distance_map(distance_map_px, cx_px, cy_px)
                     writer.writerow(
                         build_output_row(
                             row=row,
                             condition=condition,
                             muscle=muscle,
-                            block_num=block_num,
+                            block_num=record.block_num,
                             image_label=image_label,
-                            pixel_size_um=record.pixel_size_um,
+                            cell_id=cell_id,
+                            pixel_size_nm=record.pixel_size_nm,
+                            zoom=record.magnification,
                             membrane_distance_px=membrane_distance_px,
                             image_width_px=record.width_px,
                             image_height_px=record.height_px,
@@ -983,13 +1594,27 @@ def main() -> None:
         cleaned_csv=OUTPUT_CLEANED_CSV,
         image_records=image_records,
     )
+    ss_summary_rows = write_compartment_summary_csv(
+        cleaned_csv=OUTPUT_CLEANED_CSV,
+        summary_csv=OUTPUT_SS_SUMMARY_CSV,
+        image_records=image_records,
+        compartment=SS_LABEL,
+    )
+    imf_summary_rows = write_compartment_summary_csv(
+        cleaned_csv=OUTPUT_CLEANED_CSV,
+        summary_csv=OUTPUT_IMF_SUMMARY_CSV,
+        image_records=image_records,
+        compartment=IMF_LABEL,
+    )
     removed_total = removed_axis_size + removed_edge_touch + removed_disconnected_parts
     print(f"Wrote full measurements CSV: {OUTPUT_CSV}")
     print(f"Wrote cleaned measurements CSV: {OUTPUT_CLEANED_CSV}")
+    print(f"Wrote SS summary CSV: {OUTPUT_SS_SUMMARY_CSV}")
+    print(f"Wrote IMF summary CSV: {OUTPUT_IMF_SUMMARY_CSV}")
     print(
         "Cleaning summary: "
         f"total={total_rows}, kept={kept_rows}, removed={removed_total}, "
-        f"axis_size={removed_axis_size}, cell_edge={removed_edge_touch}, "
+        f"axis_size={removed_axis_size}, image_edge={removed_edge_touch}, "
         f"disconnected_parts={removed_disconnected_parts}"
     )
     print(
@@ -998,6 +1623,8 @@ def main() -> None:
             f"{source}={count}" for source, count in sorted(pixel_size_source_counts.items())
         )
     )
+    print(f"SS summary rows: {ss_summary_rows}")
+    print(f"IMF summary rows: {imf_summary_rows}")
 
 
 if __name__ == "__main__":

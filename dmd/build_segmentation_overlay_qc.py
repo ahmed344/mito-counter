@@ -12,8 +12,9 @@ import cv2
 import numpy as np
 import tifffile as tiff
 
-DEFAULT_INPUT_ROOT = Path("/workspaces/mito-counter/data/DMD/Processed")
-DEFAULT_OUTPUT_ROOT = Path("/workspaces/mito-counter/data/DMD/results/overlay_qc")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_INPUT_ROOT = REPO_ROOT / "data" / "DMD" / "Processed"
+DEFAULT_OUTPUT_ROOT = REPO_ROOT / "data" / "DMD" / "results" / "overlay_qc"
 SS_THRESHOLD_UM = 1.0
 REFERENCE_MAGNIFICATION = 6800.0
 REFERENCE_PIXEL_SIZE_UM = 0.0015396
@@ -612,6 +613,28 @@ def load_binary_mask(path: Path) -> np.ndarray:
     return mask > 0
 
 
+def load_cell_instance_labels(path: Path) -> np.ndarray:
+    """Load cell instance labels from a TIFF file.
+
+    Args:
+        path (Path): Cell-mask TIFF path. New masks may contain instance labels;
+            older masks may contain only binary foreground values.
+
+    Returns:
+        np.ndarray: Integer label image where zero is background and positive values
+        identify cell instances.
+    """
+
+    mask = load_grayscale_or_rgb(path)
+    if mask.ndim != 2:
+        raise ValueError(f"Expected 2D cell mask, got shape {mask.shape} for {path}.")
+
+    positive_values = np.unique(mask[mask > 0])
+    if positive_values.size > 1:
+        return mask.astype(np.int32)
+    return label_cell_components(mask > 0)
+
+
 def compute_external_background(mask: np.ndarray) -> np.ndarray:
     """Identify background pixels connected to the image border.
 
@@ -735,7 +758,7 @@ def blend_color_layer(
 def render_overlay(
     corrected_image: np.ndarray,
     segmented_rgb: np.ndarray,
-    cell_mask: np.ndarray,
+    cell_labels: np.ndarray,
     pixel_size_um: float,
 ) -> np.ndarray:
     """Render one QC overlay image from corrected, mito, and cell inputs.
@@ -743,7 +766,7 @@ def render_overlay(
     Args:
         corrected_image (np.ndarray): Corrected grayscale or RGB image.
         segmented_rgb (np.ndarray): RGB mito-segmentation visualization image.
-        cell_mask (np.ndarray): Boolean binary cell mask.
+        cell_labels (np.ndarray): Integer cell-label image where zero is background.
         pixel_size_um (float): Image pixel size in micrometers.
 
     Returns:
@@ -752,16 +775,16 @@ def render_overlay(
 
     base_rgb = ensure_rgb_display(corrected_image).astype(np.float32)
     mito_rgb = ensure_rgb_display(segmented_rgb)
-    if base_rgb.shape[:2] != mito_rgb.shape[:2] or base_rgb.shape[:2] != cell_mask.shape:
+    if base_rgb.shape[:2] != mito_rgb.shape[:2] or base_rgb.shape[:2] != cell_labels.shape:
         raise ValueError(
-            "Corrected image, mito segmentation, and cell mask shapes must match: "
-            f"corrected={base_rgb.shape}, segmented={mito_rgb.shape}, cell_mask={cell_mask.shape}"
+            "Corrected image, mito segmentation, and cell-label shapes must match: "
+            f"corrected={base_rgb.shape}, segmented={mito_rgb.shape}, cell_labels={cell_labels.shape}"
         )
 
+    cell_mask = cell_labels > 0
     distance_map_px = build_distance_map_px(cell_mask)
     ss_threshold_px = SS_THRESHOLD_UM / pixel_size_um
     ss_band_mask = cell_mask & np.isfinite(distance_map_px) & (distance_map_px <= ss_threshold_px)
-    cell_labels = label_cell_components(cell_mask)
     component_ids = sorted(int(value) for value in np.unique(cell_labels) if int(value) > 0)
 
     overlay = base_rgb.copy()
@@ -813,11 +836,11 @@ def process_one_overlay(job: OverlayInput) -> None:
 
     corrected_image = load_grayscale_or_rgb(job.corrected_path)
     segmented_rgb = load_grayscale_or_rgb(job.segmented_path)
-    cell_mask = load_binary_mask(job.cell_mask_path)
+    cell_labels = load_cell_instance_labels(job.cell_mask_path)
     overlay_rgb = render_overlay(
         corrected_image=corrected_image,
         segmented_rgb=segmented_rgb,
-        cell_mask=cell_mask,
+        cell_labels=cell_labels,
         pixel_size_um=job.pixel_size_um,
     )
     save_overlay_png(overlay_rgb, job.output_path)
