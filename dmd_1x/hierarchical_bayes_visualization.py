@@ -58,6 +58,7 @@ BAYES_SCRIPT_PATH = DMD_1X_DIR / "hierarchical_bayes_metrics.py"
 DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH = dmd_1x_metrics.DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH
 BAYES_FACTOR_ANNOTATION_MODE = "bayes_factor"
 EFFECT_SUMMARY_ANNOTATION_MODE = "effect_summary"
+DARK_MEDIAN_ANNOTATION_COLOR = "#08306b"
 METRIC_UNITS = {
     **c3_vis.METRIC_UNITS,
     "Density": "count/image",
@@ -447,7 +448,7 @@ def bayesian_superplot_annotations(
                 if median_label
                 else ""
             ),
-            "median_color": c3_vis.BAYES_MEDIAN_ANNOTATION_COLOR,
+            "median_color": DARK_MEDIAN_ANNOTATION_COLOR,
         }
     ]
 

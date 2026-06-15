@@ -21,11 +21,11 @@ ROBUST_Y_UPPER_QUANTILE = 0.99
 SUPERPLOT_ANNOTATION_BASE_Y = 1.0
 SUPERPLOT_ANNOTATION_BRACKET_HEIGHT = 0.025
 SUPERPLOT_ANNOTATION_TEXT_OFFSET = 0.008
-SUPERPLOT_ANNOTATION_TEXT_LINE_GAP = 0.07
-SUPERPLOT_ANNOTATION_STACK_GAP = 0.09
+SUPERPLOT_ANNOTATION_TEXT_LINE_GAP = 0.055
+SUPERPLOT_ANNOTATION_STACK_GAP = 0.065
 SUPERPLOT_ANNOTATION_FONT_SIZE = 10
 SUPERPLOT_ANNOTATION_HDI_FONT_SIZE = 9
-SUPERPLOT_ANNOTATION_HDI_COLOR = "0.35"
+SUPERPLOT_ANNOTATION_HDI_COLOR = "0.18"
 
 
 def build_output_path(
@@ -607,15 +607,14 @@ def superplot_annotation_text_items(record: dict[str, str]) -> list[tuple[str, s
         list[tuple[str, str]]: Sequence of ``(text, color)`` entries.
     """
 
-    mean_label = str(record.get("mean_label", "")).strip()
     median_label = str(record.get("median_label", "")).strip()
-    if mean_label or median_label:
-        items: list[tuple[str, str]] = []
-        if mean_label:
-            items.append((mean_label, str(record.get("mean_color", record.get("color", "black"))).strip() or "black"))
-        if median_label:
-            items.append((median_label, str(record.get("median_color", record.get("color", "black"))).strip() or "black"))
-        return items
+    if median_label:
+        return [
+            (
+                median_label,
+                str(record.get("median_color", record.get("color", "black"))).strip() or "black",
+            )
+        ]
     label = str(record.get("label", "")).strip()
     if not label:
         return []
@@ -729,6 +728,21 @@ def add_superplot_annotations(
     xaxis_transform = ax.get_xaxis_transform()
     placed_boxes: list[tuple[float, float, float, float]] = []
     annotation_counts_by_x: dict[str, int] = {}
+    x_position_by_value: dict[str, float] = {}
+    for x_value, _ in group_centers:
+        centers = [
+            center
+            for (candidate_x, _), center in group_centers.items()
+            if str(candidate_x) == str(x_value)
+        ]
+        if centers:
+            x_position_by_value[str(x_value)] = float(np.mean(centers))
+    x_rank_by_value = {
+        x_value: rank
+        for rank, x_value in enumerate(
+            sorted(x_position_by_value, key=lambda value: x_position_by_value[value])
+        )
+    }
     max_top = 1.0
     for record in annotation_records:
         x_value = str(record.get("x", ""))
@@ -746,16 +760,26 @@ def add_superplot_annotations(
         x_end = max(group_centers[start_key], group_centers[end_key])
         annotation_index = annotation_counts_by_x.get(x_value, 0)
         annotation_counts_by_x[x_value] = annotation_index + 1
-        y_line = SUPERPLOT_ANNOTATION_BASE_Y + SUPERPLOT_ANNOTATION_STACK_GAP * annotation_index
+        stagger_index = x_rank_by_value.get(x_value, 0) % 3
+        y_line = SUPERPLOT_ANNOTATION_BASE_Y + SUPERPLOT_ANNOTATION_STACK_GAP * (
+            annotation_index + stagger_index
+        )
         line_count = len(text_items)
         estimated_height = (
             SUPERPLOT_ANNOTATION_BRACKET_HEIGHT
             + SUPERPLOT_ANNOTATION_TEXT_OFFSET
             + SUPERPLOT_ANNOTATION_TEXT_LINE_GAP * max(line_count - 1, 0)
-            + 0.06
+            + 0.04
         )
-        while any((x_start <= other_x1 and x_end >= other_x0 and y_line < other_y1 and (y_line + estimated_height) > other_y0)
-                  for other_x0, other_x1, other_y0, other_y1 in placed_boxes):
+        while any(
+            (
+                x_start <= other_x1
+                and x_end >= other_x0
+                and y_line < other_y1
+                and (y_line + estimated_height) > other_y0
+            )
+            for other_x0, other_x1, other_y0, other_y1 in placed_boxes
+        ):
             y_line += SUPERPLOT_ANNOTATION_STACK_GAP
         y_bracket_top = y_line + SUPERPLOT_ANNOTATION_BRACKET_HEIGHT
         ax.plot(
@@ -777,10 +801,24 @@ def add_superplot_annotations(
                 text_color=text_color,
                 transform=xaxis_transform,
             )
-        top_y = y_text + SUPERPLOT_ANNOTATION_TEXT_LINE_GAP * max(line_count - 1, 0) + 0.05
+        top_y = y_text + SUPERPLOT_ANNOTATION_TEXT_LINE_GAP * max(line_count - 1, 0) + 0.035
         placed_boxes.append((x_start, x_end, y_line, top_y))
         max_top = max(max_top, top_y)
     return max_top
+
+
+def superplot_top_margin(annotation_top: float) -> float:
+    """Return a tight layout top margin that preserves annotation headroom.
+
+    Args:
+        annotation_top (float): Highest annotation y-position in axis-transform coordinates.
+
+    Returns:
+        float: ``tight_layout`` top rect value.
+    """
+
+    overflow = max(0.0, float(annotation_top) - 1.0)
+    return max(0.94, 0.997 - 0.035 * overflow)
 
 
 def style_superplot_axis(
@@ -1223,7 +1261,7 @@ def plot_super_violin(
         superplot_annotations=superplot_annotations,
         x_order_override=x_order_override,
         hue_order_override=hue_order_override,
-        show_legend=True,
+        show_legend=False,
     )
     output_path = build_output_path(
         y=y,
@@ -1233,9 +1271,7 @@ def plot_super_violin(
         suffix="superviolin",
         filename_prefix=filename_prefix,
     )
-    overflow = max(0.0, annotation_top - 1.0)
-    top_margin = max(0.80, 0.975 - 0.20 * overflow)
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, top_margin))
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, superplot_top_margin(annotation_top)))
     if output_path is not None:
         fig.savefig(output_path, dpi=300)
     plt.close(fig)
@@ -1288,7 +1324,7 @@ def plot_super_beeswarm(
         superplot_annotations=superplot_annotations,
         x_order_override=x_order_override,
         hue_order_override=hue_order_override,
-        show_legend=True,
+        show_legend=False,
     )
     output_path = build_output_path(
         y=y,
@@ -1298,9 +1334,7 @@ def plot_super_beeswarm(
         suffix="superbeeswarm",
         filename_prefix=filename_prefix,
     )
-    overflow = max(0.0, annotation_top - 1.0)
-    top_margin = max(0.80, 0.975 - 0.20 * overflow)
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, top_margin))
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, superplot_top_margin(annotation_top)))
     if output_path is not None:
         fig.savefig(output_path, dpi=300)
     plt.close(fig)

@@ -37,158 +37,844 @@ available_options:
   superplot_annotation_modes: ["bayes_factor", "effect_summary"]
   repeat_options: [true, false]
 
-fit_grid:
-  muscles:
-    - "Extraocular Muscle"
-    - "Tibialis Anterior"
-  compartments:
-    - "Sub-sarcolemmal (SS)"
-    - "Intermyofibrillar (IMF)"
-  metrics:
-    Density:
-      repeat: true
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Instance_count:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Area_sum:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Corrected_area_sum:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Minimum_Feret_Diameter_sum:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Minor_axis_length_sum:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Area_mean:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Corrected_area_mean:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Minimum_Feret_Diameter_mean:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Major_axis_length_mean:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Minor_axis_length_mean:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Elongation_mean:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Circularity_mean:
-      repeat: false
-      likelihood: "beta"
-      draws: 1500
-      tune: 2500
-      chains: 4
-      target_accept: 0.99
-    Solidity_mean:
-      repeat: false
-      likelihood: "beta"
-      draws: 1500
-      tune: 2500
-      chains: 4
-      target_accept: 0.99
-    NND_center_mean:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    3NND_center_mean:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    5NND_center_mean:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Voronoi_Cell_Area_center_mean:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Voronoi_Cell_Area_center_cv:
-      repeat: false
-      likelihood: "lognormal"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Ripley_L_integral:
-      repeat: false
-      likelihood: "skew_student_t"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
-    Pair_Correlation_integral:
-      repeat: false
-      likelihood: "skew_student_t"
-      draws: 5000
-      tune: 7000
-      chains: 4
-      target_accept: 0.995
+fits:
+  extraocular_muscle__sub_sarcolemmal_ss__density:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Density"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__instance_count:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Instance_count"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__area_sum:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Area_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__corrected_area_sum:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Corrected_area_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__minimum_feret_diameter_sum:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Minimum_Feret_Diameter_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__minor_axis_length_sum:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Minor_axis_length_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__area_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Area_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__corrected_area_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Corrected_area_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__minimum_feret_diameter_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Minimum_Feret_Diameter_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__major_axis_length_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Major_axis_length_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__minor_axis_length_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Minor_axis_length_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__elongation_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Elongation_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__circularity_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Circularity_mean"
+    repeat: false
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  extraocular_muscle__sub_sarcolemmal_ss__solidity_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Solidity_mean"
+    repeat: false
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  extraocular_muscle__sub_sarcolemmal_ss__nnd_center_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__3nnd_center_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "3NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__5nnd_center_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "5NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__voronoi_cell_area_center_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Voronoi_Cell_Area_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__voronoi_cell_area_center_cv:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Voronoi_Cell_Area_center_cv"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__ripley_l_integral:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Ripley_L_integral"
+    repeat: false
+    likelihood: "skew_student_t"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__sub_sarcolemmal_ss__pair_correlation_integral:
+    muscle: "Extraocular Muscle"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Pair_Correlation_integral"
+    repeat: false
+    likelihood: "skew_student_t"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__density:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Density"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__instance_count:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Instance_count"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__area_sum:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Area_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__corrected_area_sum:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Corrected_area_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__minimum_feret_diameter_sum:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Minimum_Feret_Diameter_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__minor_axis_length_sum:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Minor_axis_length_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__area_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Area_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__corrected_area_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Corrected_area_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__minimum_feret_diameter_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Minimum_Feret_Diameter_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__major_axis_length_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Major_axis_length_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__minor_axis_length_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Minor_axis_length_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__elongation_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Elongation_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__circularity_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Circularity_mean"
+    repeat: false
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  extraocular_muscle__intermyofibrillar_imf__solidity_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Solidity_mean"
+    repeat: false
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  extraocular_muscle__intermyofibrillar_imf__nnd_center_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__3nnd_center_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "3NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__5nnd_center_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "5NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__voronoi_cell_area_center_mean:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Voronoi_Cell_Area_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__voronoi_cell_area_center_cv:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Voronoi_Cell_Area_center_cv"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__ripley_l_integral:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Ripley_L_integral"
+    repeat: false
+    likelihood: "skew_student_t"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__intermyofibrillar_imf__pair_correlation_integral:
+    muscle: "Extraocular Muscle"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Pair_Correlation_integral"
+    repeat: false
+    likelihood: "skew_student_t"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__density:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Density"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__instance_count:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Instance_count"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__area_sum:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Area_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__corrected_area_sum:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Corrected_area_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__minimum_feret_diameter_sum:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Minimum_Feret_Diameter_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__minor_axis_length_sum:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Minor_axis_length_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__area_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Area_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__corrected_area_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Corrected_area_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__minimum_feret_diameter_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Minimum_Feret_Diameter_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__major_axis_length_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Major_axis_length_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__minor_axis_length_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Minor_axis_length_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__elongation_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Elongation_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__circularity_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Circularity_mean"
+    repeat: false
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior__sub_sarcolemmal_ss__solidity_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Solidity_mean"
+    repeat: false
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior__sub_sarcolemmal_ss__nnd_center_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__3nnd_center_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "3NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__5nnd_center_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "5NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__voronoi_cell_area_center_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Voronoi_Cell_Area_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__voronoi_cell_area_center_cv:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Voronoi_Cell_Area_center_cv"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__ripley_l_integral:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Ripley_L_integral"
+    repeat: false
+    likelihood: "skew_student_t"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__sub_sarcolemmal_ss__pair_correlation_integral:
+    muscle: "Tibialis Anterior"
+    compartment: "Sub-sarcolemmal (SS)"
+    metric: "Pair_Correlation_integral"
+    repeat: false
+    likelihood: "skew_student_t"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__density:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Density"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__instance_count:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Instance_count"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__area_sum:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Area_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__corrected_area_sum:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Corrected_area_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__minimum_feret_diameter_sum:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Minimum_Feret_Diameter_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__minor_axis_length_sum:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Minor_axis_length_sum"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__area_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Area_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__corrected_area_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Corrected_area_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__minimum_feret_diameter_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Minimum_Feret_Diameter_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__major_axis_length_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Major_axis_length_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__minor_axis_length_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Minor_axis_length_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__elongation_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Elongation_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__circularity_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Circularity_mean"
+    repeat: false
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior__intermyofibrillar_imf__solidity_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Solidity_mean"
+    repeat: false
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior__intermyofibrillar_imf__nnd_center_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__3nnd_center_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "3NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__5nnd_center_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "5NND_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__voronoi_cell_area_center_mean:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Voronoi_Cell_Area_center_mean"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__voronoi_cell_area_center_cv:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Voronoi_Cell_Area_center_cv"
+    repeat: false
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__ripley_l_integral:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Ripley_L_integral"
+    repeat: false
+    likelihood: "skew_student_t"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__intermyofibrillar_imf__pair_correlation_integral:
+    muscle: "Tibialis Anterior"
+    compartment: "Intermyofibrillar (IMF)"
+    metric: "Pair_Correlation_integral"
+    repeat: false
+    likelihood: "skew_student_t"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995

@@ -51,6 +51,7 @@ COMPARTMENT_ORDER = [SS_LABEL, IMF_LABEL]
 MUSCLE_ORDER = ["Extraocular Muscle", "Tibialis Anterior"]
 BAYES_FACTOR_ANNOTATION_MODE = "bayes_factor"
 EFFECT_SUMMARY_ANNOTATION_MODE = "effect_summary"
+DARK_MEDIAN_ANNOTATION_COLOR = "#08306b"
 
 
 # %% Helper functions
@@ -248,7 +249,7 @@ def bayesian_annotations_for_metric(
                 "mean_label": mean_label,
                 "mean_color": "purple",
                 "median_label": median_label,
-                "median_color": "tab:blue",
+                "median_color": DARK_MEDIAN_ANNOTATION_COLOR,
             }
         )
     return annotations

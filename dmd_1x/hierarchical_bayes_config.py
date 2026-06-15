@@ -77,8 +77,13 @@ def load_hierarchical_bayes_config(
         section_name="root",
         section=config_mapping,
         required_keys={"paths", "runtime", "available_options"},
-        optional_keys={"enabled", "analysis_id", "filters", "fits", "fit_grid", "image_summary"},
+        optional_keys={"enabled", "analysis_id", "filters", "fits", "fit_grid"},
     )
+    if "image_summary" in config_mapping:
+        raise ValueError(
+            "Nested 'image_summary' sections are no longer supported in this file. "
+            "Use dmd_1x/hierarchical_bayes_image_summary_config.yaml for image-summary analysis."
+        )
     analysis_id = dmd_config.require_allowed_string(
         "root",
         "analysis_id",
@@ -109,14 +114,6 @@ def load_hierarchical_bayes_config(
         real_metrics=root_real_metrics,
     )
     analyses_by_id = {analysis.analysis_id: analysis}
-    if "image_summary" in config_mapping:
-        analyses_by_id["image_summary"] = dmd_config.parse_analysis_config(
-            analysis_id="image_summary",
-            config_mapping=dmd_config.require_mapping("image_summary", config_mapping["image_summary"]),
-            positive_metrics=image_summary_positive_metrics,
-            bounded_metrics=image_summary_bounded_metrics,
-            real_metrics=image_summary_real_metrics,
-        )
     return DmdHierarchicalBayesConfig(
         config_path=Path(path),
         paths=analysis.paths,
