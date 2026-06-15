@@ -1,0 +1,194 @@
+# Strict DMD_1X image-summary hierarchical Bayes configuration.
+# Density is the per-image instance count from the DMD_1X summary CSVs.
+
+enabled: true
+analysis_id: "image_summary"
+
+paths:
+  input_csvs:
+    - "/workspaces/mito-counter/data/DMD_1X/results/measurements_cleaned_ss_summary.csv"
+    - "/workspaces/mito-counter/data/DMD_1X/results/measurements_cleaned_imf_summary.csv"
+  summary_csv: "/workspaces/mito-counter/data/DMD_1X/results/hierarchical_bayes_statistics_image_summary.csv"
+  trace_dir: "/workspaces/mito-counter/data/DMD_1X/results/bayes_traces_image_summary"
+  figure_root: "/workspaces/mito-counter/data/DMD_1X/results/figures/bayesian_image_summary"
+
+runtime:
+  cores: 20
+  seed: 20260609
+  save_idata: true
+  summary_update_mode: "merge"
+  visualization_refresh_mode: "never"
+  superplot_annotation_mode: "effect_summary"
+  retry_on_warnings: false
+  retry_max_draws: 10000
+  retry_max_tune: 10000
+  retry_max_target_accept: 0.999
+
+filters:
+  minimum_zoom: 4700.0
+  maximum_zoom: 4900.0
+
+available_options:
+  positive_likelihoods: ["gamma", "lognormal"]
+  bounded_likelihoods: ["beta", "zero_one_inflated_beta", "logitnormal", "logit_skew_normal"]
+  real_likelihoods: ["normal", "student_t", "skew_normal", "skew_student_t"]
+  summary_update_modes: ["merge", "replace"]
+  visualization_refresh_modes: ["never", "refit_first", "rerun_missing_traces"]
+  superplot_annotation_modes: ["bayes_factor", "effect_summary"]
+  repeat_options: [true, false]
+
+fit_grid:
+  muscles:
+    - "Extraocular Muscle"
+    - "Tibialis Anterior"
+  compartments:
+    - "Sub-sarcolemmal (SS)"
+    - "Intermyofibrillar (IMF)"
+  metrics:
+    Density:
+      repeat: true
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Instance_count:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Area_sum:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Corrected_area_sum:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Minimum_Feret_Diameter_sum:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Minor_axis_length_sum:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Area_mean:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Corrected_area_mean:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Minimum_Feret_Diameter_mean:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Major_axis_length_mean:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Minor_axis_length_mean:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Elongation_mean:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Circularity_mean:
+      repeat: false
+      likelihood: "beta"
+      draws: 1500
+      tune: 2500
+      chains: 4
+      target_accept: 0.99
+    Solidity_mean:
+      repeat: false
+      likelihood: "beta"
+      draws: 1500
+      tune: 2500
+      chains: 4
+      target_accept: 0.99
+    NND_center_mean:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    3NND_center_mean:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    5NND_center_mean:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Voronoi_Cell_Area_center_mean:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Voronoi_Cell_Area_center_cv:
+      repeat: false
+      likelihood: "lognormal"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Ripley_L_integral:
+      repeat: false
+      likelihood: "skew_student_t"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
+    Pair_Correlation_integral:
+      repeat: false
+      likelihood: "skew_student_t"
+      draws: 5000
+      tune: 7000
+      chains: 4
+      target_accept: 0.995
