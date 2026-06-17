@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from typing import Callable
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -30,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from dmd import stats_utils as dmd_stats_utils
+from dmd_1x import stats_utils as dmd_stats_utils
 
 INPUT_CSV = REPO_ROOT / "data" / "DMD_1X" / "results" / "measurements_cleaned.csv"
 IMAGE_SUMMARY_INPUT_CSVS = [
@@ -41,10 +42,19 @@ RESULTS_DIR = REPO_ROOT / "data" / "DMD_1X" / "results"
 INSTANCE_FIGURES_DIR = RESULTS_DIR / "figures_instance"
 IMAGE_SUMMARY_FIGURES_DIR = RESULTS_DIR / "figures_image_summary"
 STATISTICS_CSV = RESULTS_DIR / "statistics_image_summary.csv"
+STATISTICS_MUSCLE_CSV = RESULTS_DIR / "statistics_image_summary_muscle.csv"
 BAYESIAN_INSTANCE_SUMMARY_CSV = RESULTS_DIR / "hierarchical_bayes_statistics.csv"
 BAYESIAN_IMAGE_SUMMARY_CSV = RESULTS_DIR / "hierarchical_bayes_statistics_image_summary.csv"
+BAYESIAN_INSTANCE_MUSCLE_SUMMARY_CSV = RESULTS_DIR / "hierarchical_bayes_muscle_statistics.csv"
+BAYESIAN_IMAGE_SUMMARY_MUSCLE_SUMMARY_CSV = (
+    RESULTS_DIR / "hierarchical_bayes_muscle_statistics_image_summary.csv"
+)
 BAYESIAN_CONFIG_YAML = REPO_ROOT / "dmd_1x" / "hierarchical_bayes_config.yaml"
 BAYESIAN_IMAGE_SUMMARY_CONFIG_YAML = REPO_ROOT / "dmd_1x" / "hierarchical_bayes_image_summary_config.yaml"
+BAYESIAN_MUSCLE_CONFIG_YAML = REPO_ROOT / "dmd_1x" / "hierarchical_bayes_muscle_config.yaml"
+BAYESIAN_MUSCLE_IMAGE_SUMMARY_CONFIG_YAML = (
+    REPO_ROOT / "dmd_1x" / "hierarchical_bayes_muscle_image_summary_config.yaml"
+)
 SS_LABEL = "Sub-sarcolemmal (SS)"
 IMF_LABEL = "Intermyofibrillar (IMF)"
 COMPARTMENT_ORDER = [SS_LABEL, IMF_LABEL]
@@ -88,6 +98,22 @@ def build_muscle_compartment_label(muscle: str, compartment: str) -> str:
         short_muscle = muscle_text
     short_compartment = "SS" if compartment == SS_LABEL else "IMF"
     return f"{short_muscle} | {short_compartment}"
+
+
+def build_genotype_compartment_label(condition: str, compartment: str) -> str:
+    """Create a compact combined plotting label for genotype and compartment.
+
+    Args:
+        condition (str): Genotype/condition label.
+        compartment (str): Compartment label.
+
+    Returns:
+        str: Combined genotype-compartment label.
+    """
+
+    short_condition = dmd_stats_utils.format_condition_display_label(condition)
+    short_compartment = "SS" if compartment == SS_LABEL else "IMF"
+    return f"{short_condition} | {short_compartment}"
 
 
 def load_image_summary_dataframe(input_csvs: list[Path]) -> pd.DataFrame:
@@ -213,6 +239,7 @@ def bayesian_annotations_for_metric(
     summary_df: pd.DataFrame,
     metric: str,
     annotation_mode: str,
+    x_label_builder: Callable[[str, str], str] = build_muscle_compartment_label,
 ) -> list[dict[str, str]]:
     """Build Bayesian superplot annotations for one metric.
 
@@ -220,6 +247,8 @@ def bayesian_annotations_for_metric(
         summary_df (pd.DataFrame): Bayesian summary dataframe.
         metric (str): Metric currently being plotted.
         annotation_mode (str): Either ``bayes_factor`` or ``effect_summary``.
+        x_label_builder (Callable[[str, str], str]): Builder for x-axis group labels
+            using summary ``muscle`` and ``compartment`` values.
 
     Returns:
         list[dict[str, str]]: Annotation records for ``stats_utils``.
@@ -230,7 +259,7 @@ def bayesian_annotations_for_metric(
     metric_rows = summary_df.loc[summary_df["metric"].astype(str) == str(metric)]
     annotations: list[dict[str, str]] = []
     for _, row in metric_rows.iterrows():
-        x_label = build_muscle_compartment_label(row["muscle"], row["compartment"])
+        x_label = x_label_builder(str(row["muscle"]), str(row["compartment"]))
         if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE:
             mean_label = format_delta_effect_annotation(row=row, label="delta_mean")
             median_label = format_delta_effect_annotation(row=row, label="delta_median")
@@ -298,6 +327,10 @@ def generate_superplots_for_metrics(
     unit_dict: dict[str, str],
     summary_df: pd.DataFrame,
     annotation_mode: str,
+    x_column: str = "Muscle_Compartment",
+    hue_column: str = "Condition",
+    output_dir_suffix: str = "",
+    x_label_builder: Callable[[str, str], str] = build_muscle_compartment_label,
 ) -> None:
     """Generate image-level superviolin and superbeeswarm plots.
 
@@ -310,6 +343,12 @@ def generate_superplots_for_metrics(
         unit_dict (dict[str, str]): Metric unit mapping.
         summary_df (pd.DataFrame): Bayesian summary dataframe for annotations.
         annotation_mode (str): Superplot annotation mode.
+        x_column (str): Data column used for the x-axis grouping.
+        hue_column (str): Data column used for group hues.
+        output_dir_suffix (str): Optional suffix appended to generated superplot
+            directories.
+        x_label_builder (Callable[[str, str], str]): Builder used to align Bayesian
+            annotation x labels with plotting groups.
 
     Returns:
         None: Saves figures to disk.
@@ -320,31 +359,56 @@ def generate_superplots_for_metrics(
             summary_df=summary_df,
             metric=metric,
             annotation_mode=annotation_mode,
+            x_label_builder=x_label_builder,
         )
         dmd_stats_utils.plot_super_violin(
             data=data,
-            x="Muscle_Compartment",
+            x=x_column,
             y=metric,
-            hue="Condition",
+            hue=hue_column,
             block="Block",
             unit_dict=unit_dict,
             save_dir=save_dir,
             superplot_annotations=annotations,
             x_order_override=x_order,
             hue_order_override=hue_order,
+            output_dir_suffix=output_dir_suffix,
         )
         dmd_stats_utils.plot_super_beeswarm(
             data=data,
-            x="Muscle_Compartment",
+            x=x_column,
             y=metric,
-            hue="Condition",
+            hue=hue_column,
             block="Block",
             unit_dict=unit_dict,
             save_dir=save_dir,
             superplot_annotations=annotations,
             x_order_override=x_order,
             hue_order_override=hue_order,
+            output_dir_suffix=output_dir_suffix,
         )
+
+
+def prepare_muscle_contrast_dataframe(data: pd.DataFrame) -> pd.DataFrame:
+    """Prepare a dataframe for muscle contrast plots within genotype strata.
+
+    Args:
+        data (pd.DataFrame): Source dataframe with ``Condition``, ``Muscle``, and
+            ``Compartment`` columns.
+
+    Returns:
+        pd.DataFrame: Copy with ``Genotype_Compartment`` helper labels.
+    """
+
+    prepared = data.copy()
+    prepared["Genotype_Compartment"] = prepared.apply(
+        lambda row: build_genotype_compartment_label(
+            condition=str(row["Condition"]),
+            compartment=str(row["Compartment"]),
+        ),
+        axis=1,
+    )
+    return prepared
 
 
 # %% Load and prepare instance-level input data
@@ -417,6 +481,48 @@ generate_superplots_for_metrics(
     annotation_mode=instance_superplot_annotation_mode,
 )
 
+# %% Generate instance-level muscle-contrast superplots
+df_instance_muscle = prepare_muscle_contrast_dataframe(data=df_instance)
+instance_muscle_order = [
+    value for value in MUSCLE_ORDER if value in set(df_instance_muscle["Muscle"].dropna().astype(str))
+]
+instance_remaining_muscles = sorted(set(df_instance_muscle["Muscle"].dropna().astype(str)) - set(instance_muscle_order))
+instance_muscle_order.extend(instance_remaining_muscles)
+if len(instance_muscle_order) != 2:
+    raise ValueError(
+        f"Expected exactly 2 instance muscle levels for muscle superplots, found "
+        f"{len(instance_muscle_order)} ({instance_muscle_order})."
+    )
+instance_genotype_compartment_order = [
+    build_genotype_compartment_label(condition=condition, compartment=compartment)
+    for condition in conditions
+    for compartment in COMPARTMENT_ORDER
+    if (
+        (df_instance_muscle["Condition"].astype(str) == condition)
+        & (df_instance_muscle["Compartment"].astype(str) == compartment)
+    ).any()
+]
+instance_muscle_annotation_mode = load_superplot_annotation_mode(
+    config_yaml=BAYESIAN_MUSCLE_CONFIG_YAML
+)
+bayesian_instance_muscle_summary_df = load_bayesian_superplot_annotations(
+    summary_csv=BAYESIAN_INSTANCE_MUSCLE_SUMMARY_CSV
+)
+generate_superplots_for_metrics(
+    data=df_instance_muscle,
+    metrics=instance_metrics,
+    save_dir=INSTANCE_FIGURES_DIR,
+    x_order=instance_genotype_compartment_order,
+    hue_order=instance_muscle_order,
+    unit_dict=units,
+    summary_df=bayesian_instance_muscle_summary_df,
+    annotation_mode=instance_muscle_annotation_mode,
+    x_column="Genotype_Compartment",
+    hue_column="Muscle",
+    output_dir_suffix="_muscle",
+    x_label_builder=build_genotype_compartment_label,
+)
+
 
 # %% Load and prepare image-summary input data
 df_image_summary = load_image_summary_dataframe(input_csvs=IMAGE_SUMMARY_INPUT_CSVS)
@@ -460,6 +566,52 @@ generate_superplots_for_metrics(
     unit_dict=units,
     summary_df=bayesian_summary_df,
     annotation_mode=superplot_annotation_mode,
+)
+
+# %% Generate image-summary muscle-contrast superplots
+df_image_summary_muscle = prepare_muscle_contrast_dataframe(data=df_image_summary)
+image_summary_muscle_order = [
+    value
+    for value in MUSCLE_ORDER
+    if value in set(df_image_summary_muscle["Muscle"].dropna().astype(str))
+]
+image_summary_remaining_muscles = sorted(
+    set(df_image_summary_muscle["Muscle"].dropna().astype(str)) - set(image_summary_muscle_order)
+)
+image_summary_muscle_order.extend(image_summary_remaining_muscles)
+if len(image_summary_muscle_order) != 2:
+    raise ValueError(
+        f"Expected exactly 2 image-summary muscle levels for muscle analyses, found "
+        f"{len(image_summary_muscle_order)} ({image_summary_muscle_order})."
+    )
+image_summary_genotype_compartment_order = [
+    build_genotype_compartment_label(condition=condition, compartment=compartment)
+    for condition in image_summary_conditions
+    for compartment in COMPARTMENT_ORDER
+    if (
+        (df_image_summary_muscle["Condition"].astype(str) == condition)
+        & (df_image_summary_muscle["Compartment"].astype(str) == compartment)
+    ).any()
+]
+muscle_superplot_annotation_mode = load_superplot_annotation_mode(
+    config_yaml=BAYESIAN_MUSCLE_IMAGE_SUMMARY_CONFIG_YAML
+)
+bayesian_muscle_summary_df = load_bayesian_superplot_annotations(
+    summary_csv=BAYESIAN_IMAGE_SUMMARY_MUSCLE_SUMMARY_CSV
+)
+generate_superplots_for_metrics(
+    data=df_image_summary_muscle,
+    metrics=metrics,
+    save_dir=IMAGE_SUMMARY_FIGURES_DIR,
+    x_order=image_summary_genotype_compartment_order,
+    hue_order=image_summary_muscle_order,
+    unit_dict=units,
+    summary_df=bayesian_muscle_summary_df,
+    annotation_mode=muscle_superplot_annotation_mode,
+    x_column="Genotype_Compartment",
+    hue_column="Muscle",
+    output_dir_suffix="_muscle",
+    x_label_builder=build_genotype_compartment_label,
 )
 
 
@@ -513,3 +665,56 @@ results_df = pd.DataFrame(results).sort_values(["Measurement", "Muscle", "Compar
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 results_df.to_csv(STATISTICS_CSV, index=False)
 print(f"Saved DMD_1X image-summary statistics to {STATISTICS_CSV}")
+
+
+# %% Compute Mann-Whitney muscle statistics by image-summary metric, genotype, and compartment
+muscle_results: list[dict[str, object]] = []
+for metric in metrics:
+    for condition in image_summary_conditions:
+        for compartment in COMPARTMENT_ORDER:
+            group_slice = df_image_summary_muscle[
+                (df_image_summary_muscle["Condition"].astype(str) == condition)
+                & (df_image_summary_muscle["Compartment"].astype(str) == compartment)
+            ].copy()
+            if group_slice.empty:
+                continue
+            values_a = pd.to_numeric(
+                group_slice.loc[
+                    group_slice["Muscle"].astype(str) == image_summary_muscle_order[0],
+                    metric,
+                ],
+                errors="coerce",
+            ).dropna()
+            values_b = pd.to_numeric(
+                group_slice.loc[
+                    group_slice["Muscle"].astype(str) == image_summary_muscle_order[1],
+                    metric,
+                ],
+                errors="coerce",
+            ).dropna()
+            if values_a.empty or values_b.empty:
+                continue
+            statistic, p_value = mannwhitneyu(values_a, values_b, alternative="two-sided")
+            muscle_results.append(
+                {
+                    "Measurement": metric,
+                    "Genotype": condition,
+                    "Compartment": compartment,
+                    "Muscle_A": image_summary_muscle_order[0],
+                    "Muscle_B": image_summary_muscle_order[1],
+                    "N_A": len(values_a),
+                    "N_B": len(values_b),
+                    "Mean_A": values_a.mean(),
+                    "Mean_B": values_b.mean(),
+                    "Median_A": values_a.median(),
+                    "Median_B": values_b.median(),
+                    "Mann_Whitney_U": statistic,
+                    "p_value": p_value,
+                }
+            )
+
+muscle_results_df = pd.DataFrame(muscle_results).sort_values(
+    ["Measurement", "Genotype", "Compartment"]
+)
+muscle_results_df.to_csv(STATISTICS_MUSCLE_CSV, index=False)
+print(f"Saved DMD_1X muscle image-summary statistics to {STATISTICS_MUSCLE_CSV}")
