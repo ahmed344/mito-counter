@@ -96,16 +96,18 @@ def short_compartment_label(compartment: str) -> str:
 
 
 def comparison_label(genotype: str, compartment: str) -> str:
-    """Build a combined genotype-compartment label for plotting.
+    """Build a compact genotype label for muscle-contrast plotting.
 
     Args:
         genotype (str): Genotype label.
         compartment (str): Compartment label.
 
     Returns:
-        str: Compact comparison label.
+        str: Genotype-only label for pooled analyses, otherwise genotype-compartment label.
     """
 
+    if str(compartment) == dmd_1x_muscle_metrics.ALL_COMPARTMENTS_LABEL:
+        return str(genotype)
     return f"{genotype} | {short_compartment_label(compartment)}"
 
 
@@ -124,6 +126,8 @@ def dmd_1x_muscle_fit_title(row: pd.Series) -> str:
     compartment = str(row.get("compartment", ""))
     model_level = str(row.get("model_level", "instance"))
     scope = " image summary" if model_level == "image_summary" else " instances"
+    if compartment == dmd_1x_muscle_metrics.ALL_COMPARTMENTS_LABEL:
+        return f"{metric} - {genotype}{scope}"
     return f"{metric} - {genotype} | {short_compartment_label(compartment)}{scope}"
 
 

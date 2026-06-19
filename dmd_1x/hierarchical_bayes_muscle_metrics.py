@@ -55,6 +55,7 @@ REAL_LIKELIHOODS = tuple(dmd_1x_metrics.REAL_LIKELIHOODS)
 DEFAULT_HIERARCHICAL_BAYES_CONFIG_PATH = (
     DMD_1X_DIR / "hierarchical_bayes_muscle_config.yaml"
 )
+ALL_COMPARTMENTS_LABEL = dmd_1x_metrics.ALL_COMPARTMENTS_LABEL
 MUSCLE_CONTRAST_FLAG_COLUMN = "__muscle_contrast_remapped__"
 
 
