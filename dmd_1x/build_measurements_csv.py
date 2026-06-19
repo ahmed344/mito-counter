@@ -43,6 +43,8 @@ OUTPUT_CSV = RESULTS_ROOT / "measurements.csv"
 OUTPUT_CLEANED_CSV = RESULTS_ROOT / "measurements_cleaned.csv"
 OUTPUT_SS_SUMMARY_CSV = RESULTS_ROOT / "measurements_cleaned_ss_summary.csv"
 OUTPUT_IMF_SUMMARY_CSV = RESULTS_ROOT / "measurements_cleaned_imf_summary.csv"
+OUTPUT_NO_COMPARTMENT_CLEANED_CSV = RESULTS_ROOT / "measurements_cleaned_no_compartment.csv"
+OUTPUT_NO_COMPARTMENT_SUMMARY_CSV = RESULTS_ROOT / "measurements_cleaned_no_compartment_summary.csv"
 
 GROUP_DIRECTORY_RE = re.compile(r"^(TA|EOM)_(WT|DMD)$", re.IGNORECASE)
 COMPARTMENT_DIRECTORY_RE = re.compile(r"^(SS|IMF)_([0-9]+)$", re.IGNORECASE)
@@ -50,6 +52,7 @@ COMPARTMENT_MAP = {
     "SS": SS_LABEL,
     "IMF": IMF_LABEL,
 }
+ALL_COMPARTMENTS_LABEL = "All compartments"
 
 ImageKey = tuple[str, str, str, str, str]
 
@@ -428,12 +431,18 @@ def clean_measurements_csv(
     )
 
 
-def summarize_image_rows(rows: list[dict[str, str]], record: ImageRecord) -> dict[str, str]:
+def summarize_image_rows(
+    rows: list[dict[str, str]],
+    record: ImageRecord,
+    compartment_label: str | None = None,
+) -> dict[str, str]:
     """Summarize cleaned DMD_1X instance rows for one image.
 
     Args:
         rows (list[dict[str, str]]): Cleaned measurement rows belonging to one image.
         record (ImageRecord): Metadata and calibration for the source image.
+        compartment_label (str | None): Optional compartment label to write instead
+            of the source image compartment.
 
     Returns:
         dict[str, str]: CSV-ready image summary values.
@@ -452,7 +461,7 @@ def summarize_image_rows(rows: list[dict[str, str]], record: ImageRecord) -> dic
     density = float(instance_count)
 
     return {
-        "Compartment": record.compartment,
+        "Compartment": compartment_label or record.compartment,
         "Density": format_optional_float(density, digits=12),
         "Instance_count": str(instance_count),
         "Zoom": format_optional_float(record.magnification, digits=6),
@@ -601,6 +610,124 @@ def write_compartment_summary_csv(
     return rows_written
 
 
+def write_no_compartment_measurements_csv(
+    cleaned_csv: Path,
+    no_compartment_csv: Path,
+    compartment_label: str = ALL_COMPARTMENTS_LABEL,
+) -> int:
+    """Write cleaned instance rows with a pooled compartment label.
+
+    Args:
+        cleaned_csv (Path): Source cleaned instance-level measurements CSV path.
+        no_compartment_csv (Path): Destination pooled measurements CSV path.
+        compartment_label (str): Label to use for all rows in the ``Compartment`` column.
+
+    Returns:
+        int: Number of cleaned instance rows written.
+    """
+    no_compartment_csv.parent.mkdir(parents=True, exist_ok=True)
+    rows_written = 0
+    with open(cleaned_csv, "r", newline="", encoding="utf-8") as in_handle:
+        reader = csv.DictReader(in_handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"Missing CSV header in: {cleaned_csv}")
+        fieldnames = list(reader.fieldnames)
+        if "Compartment" not in fieldnames:
+            raise KeyError(f"Missing Compartment column in: {cleaned_csv}")
+        with open(no_compartment_csv, "w", newline="", encoding="utf-8") as out_handle:
+            writer = csv.DictWriter(out_handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in reader:
+                row["Compartment"] = compartment_label
+                writer.writerow(row)
+                rows_written += 1
+    return rows_written
+
+
+def write_no_compartment_summary_csv(
+    cleaned_csv: Path,
+    summary_csv: Path,
+    image_records: dict[ImageKey, ImageRecord],
+    compartment_label: str = ALL_COMPARTMENTS_LABEL,
+) -> int:
+    """Write one pooled-compartment summary row per DMD_1X source image.
+
+    Args:
+        cleaned_csv (Path): Cleaned instance-level measurements CSV path.
+        summary_csv (Path): Destination pooled image-summary CSV path.
+        image_records (dict[ImageKey, ImageRecord]): Per-image metadata records.
+        compartment_label (str): Label to use for all rows in the ``Compartment`` column.
+
+    Returns:
+        int: Number of image summary rows written.
+    """
+    grouped_rows: dict[ImageKey, list[dict[str, str]]] = {}
+    with open(cleaned_csv, "r", newline="", encoding="utf-8") as in_handle:
+        reader = csv.DictReader(in_handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"Missing CSV header in: {cleaned_csv}")
+        for row in reader:
+            grouped_rows.setdefault(key_from_output_row(row), []).append(row)
+
+    fieldnames = [
+        "Condition",
+        "Muscle",
+        "Block",
+        "image",
+        "Compartment",
+        "Density",
+        "Instance_count",
+        "Zoom",
+        "Image_width_px",
+        "Image_height_px",
+        "Pixel_size_nm",
+        "Image_area_nm2",
+        "Area_sum",
+        "Corrected_area_sum",
+        "Minimum_Feret_Diameter_sum",
+        "Minor_axis_length_sum",
+        "Area_mean",
+        "Corrected_area_mean",
+        "Minimum_Feret_Diameter_mean",
+        "Major_axis_length_mean",
+        "Minor_axis_length_mean",
+        "Elongation_mean",
+        "Circularity_mean",
+        "Solidity_mean",
+        "NND_center_mean",
+        "3NND_center_mean",
+        "5NND_center_mean",
+        "Voronoi_Cell_Area_center_mean",
+        "Voronoi_Cell_Area_center_cv",
+        "Ripley_L_integral",
+        "Pair_Correlation_integral",
+    ]
+
+    summary_csv.parent.mkdir(parents=True, exist_ok=True)
+    rows_written = 0
+    with open(summary_csv, "w", newline="", encoding="utf-8") as out_handle:
+        writer = csv.DictWriter(out_handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for key, record in sorted(image_records.items()):
+            rows = grouped_rows.get(key, [])
+            summary = summarize_image_rows(
+                rows=rows,
+                record=record,
+                compartment_label=compartment_label,
+            )
+            writer.writerow(
+                {
+                    "Condition": record.condition,
+                    "Muscle": record.muscle,
+                    "Block": record.block_num,
+                    "image": record.image_label,
+                    **summary,
+                }
+            )
+            rows_written += 1
+    return rows_written
+
+
 def write_measurements_csv(
     output_csv: Path,
     image_records: dict[ImageKey, ImageRecord],
@@ -706,6 +833,15 @@ def main() -> None:
         image_records=image_records,
         compartment=IMF_LABEL,
     )
+    no_compartment_rows = write_no_compartment_measurements_csv(
+        cleaned_csv=OUTPUT_CLEANED_CSV,
+        no_compartment_csv=OUTPUT_NO_COMPARTMENT_CLEANED_CSV,
+    )
+    no_compartment_summary_rows = write_no_compartment_summary_csv(
+        cleaned_csv=OUTPUT_CLEANED_CSV,
+        summary_csv=OUTPUT_NO_COMPARTMENT_SUMMARY_CSV,
+        image_records=image_records,
+    )
 
     removed_total = removed_axis_size + removed_edge_touch + removed_disconnected_parts
     print(f"Loaded DMD_1X image records: {len(image_records)}")
@@ -720,8 +856,12 @@ def main() -> None:
     )
     print(f"Wrote SS summary CSV: {OUTPUT_SS_SUMMARY_CSV}")
     print(f"Wrote IMF summary CSV: {OUTPUT_IMF_SUMMARY_CSV}")
+    print(f"Wrote no-compartment cleaned CSV: {OUTPUT_NO_COMPARTMENT_CLEANED_CSV}")
+    print(f"Wrote no-compartment summary CSV: {OUTPUT_NO_COMPARTMENT_SUMMARY_CSV}")
     print(f"SS summary rows: {ss_summary_rows}")
     print(f"IMF summary rows: {imf_summary_rows}")
+    print(f"No-compartment cleaned rows: {no_compartment_rows}")
+    print(f"No-compartment summary rows: {no_compartment_summary_rows}")
     print(
         "Pixel-size sources: "
         + ", ".join(

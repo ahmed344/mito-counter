@@ -1,0 +1,277 @@
+# Strict DMD_1X hierarchical Bayes configuration without compartment stratification.
+# Root analysis is instance-level mitochondria nested in source images.
+
+enabled: true
+analysis_id: "instance"
+
+paths:
+  input_csv: "/workspaces/mito-counter/data/DMD_1X/results/measurements_cleaned_no_compartment.csv"
+  summary_csv: "/workspaces/mito-counter/data/DMD_1X/results/hierarchical_bayes_statistics_no_compartment.csv"
+  trace_dir: "/workspaces/mito-counter/data/DMD_1X/results/bayes_traces_no_compartment"
+  figure_root: "/workspaces/mito-counter/data/DMD_1X/results/figures/bayesian_no_compartment"
+
+runtime:
+  cores: 20
+  seed: 20260609
+  save_idata: true
+  summary_update_mode: "merge"
+  visualization_refresh_mode: "never"
+  superplot_annotation_mode: "effect_summary"
+  retry_on_warnings: false
+  retry_max_draws: 10000
+  retry_max_tune: 10000
+  retry_max_target_accept: 0.999
+
+filters:
+  minimum_zoom: 4700.0
+  maximum_zoom: 4900.0
+
+available_options:
+  positive_likelihoods: ["gamma", "lognormal"]
+  bounded_likelihoods: ["beta", "zero_one_inflated_beta", "logitnormal", "logit_skew_normal"]
+  summary_update_modes: ["merge", "replace"]
+  visualization_refresh_modes: ["never", "refit_first", "rerun_missing_traces"]
+  superplot_annotation_modes: ["bayes_factor", "effect_summary"]
+  repeat_options: [true, false]
+
+fits:
+  extraocular_muscle__all_compartments__area:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "Area"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__all_compartments__corrected_area:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "Corrected_area"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__all_compartments__major_axis_length:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "Major_axis_length"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__all_compartments__minor_axis_length:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "Minor_axis_length"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__all_compartments__minimum_feret_diameter:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "Minimum_Feret_Diameter"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__all_compartments__elongation:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "Elongation"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__all_compartments__circularity:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "Circularity"
+    repeat: true
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  extraocular_muscle__all_compartments__solidity:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "Solidity"
+    repeat: true
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  extraocular_muscle__all_compartments__nnd:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "NND"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__all_compartments__3nnd:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "3NND"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__all_compartments__5nnd:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "5NND"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  extraocular_muscle__all_compartments__voronoi_cell_area:
+    muscle: "Extraocular Muscle"
+    compartment: "All compartments"
+    metric: "Voronoi_Cell_Area"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__all_compartments__area:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "Area"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__all_compartments__corrected_area:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "Corrected_area"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__all_compartments__major_axis_length:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "Major_axis_length"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__all_compartments__minor_axis_length:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "Minor_axis_length"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__all_compartments__minimum_feret_diameter:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "Minimum_Feret_Diameter"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__all_compartments__elongation:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "Elongation"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__all_compartments__circularity:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "Circularity"
+    repeat: true
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior__all_compartments__solidity:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "Solidity"
+    repeat: true
+    likelihood: "beta"
+    draws: 1500
+    tune: 2500
+    chains: 4
+    target_accept: 0.99
+  tibialis_anterior__all_compartments__nnd:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "NND"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__all_compartments__3nnd:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "3NND"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__all_compartments__5nnd:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "5NND"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995
+  tibialis_anterior__all_compartments__voronoi_cell_area:
+    muscle: "Tibialis Anterior"
+    compartment: "All compartments"
+    metric: "Voronoi_Cell_Area"
+    repeat: true
+    likelihood: "lognormal"
+    draws: 5000
+    tune: 7000
+    chains: 4
+    target_accept: 0.995

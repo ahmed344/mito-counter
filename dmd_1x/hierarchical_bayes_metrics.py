@@ -1,4 +1,4 @@
-"""Fit DMD_1X hierarchical Bayesian models by compartment."""
+"""Fit DMD_1X hierarchical Bayesian models by configured analysis group."""
 
 from __future__ import annotations
 
@@ -65,6 +65,7 @@ DMD_LABEL = "Duchenne_Muscular_Dystrophy"
 WT_LABEL = "Wildtype"
 SS_LABEL = "Sub-sarcolemmal (SS)"
 IMF_LABEL = "Intermyofibrillar (IMF)"
+ALL_COMPARTMENTS_LABEL = "All compartments"
 DMD_1X_IMAGE_SUMMARY_POSITIVE_METRICS = (
     "Density",
     "Instance_count",
