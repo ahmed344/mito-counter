@@ -17,6 +17,7 @@ DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/Calpaine_3/Raw"
 DEFAULT_OUTPUT_ROOT = "/workspaces/mito-counter/data/Calpaine_3/Processed"
 DEFAULT_MAGNIFICATION_TOKEN = "6800X"
 MUSCLE_TOKENS = ("SOL", "TA", "EOM")
+BLOCK_DIRECTORY_RE = re.compile(r"^\s*(SOL|TA)\s*[-_ ]\s*([0-9]+)\s*$", re.IGNORECASE)
 
 
 def find_dm3_files(root: str, magnification_token: str | None) -> list[str]:
@@ -51,6 +52,31 @@ def _normalize_whitespace(value: str) -> str:
         str: Token with spaces replaced by underscores.
     """
     return value.replace(" ", "_")
+
+
+def _build_prefixed_image_stem(dm3_path: str) -> str:
+    """Build an output-safe image stem prefixed with the source block directory.
+
+    Args:
+        dm3_path (str): Absolute source DM3 path whose ancestor block directory should be prefixed.
+
+    Returns:
+        str: Image stem in the form ``<block_directory>_<basename>`` with normalized whitespace.
+    """
+    current_directory = os.path.dirname(dm3_path)
+    block_directory: str | None = None
+    while current_directory and current_directory != os.path.dirname(current_directory):
+        candidate = os.path.basename(current_directory)
+        if BLOCK_DIRECTORY_RE.fullmatch(candidate):
+            block_directory = candidate
+            break
+        current_directory = os.path.dirname(current_directory)
+    if block_directory is None:
+        block_directory = os.path.basename(os.path.dirname(dm3_path))
+    base = os.path.splitext(os.path.basename(dm3_path))[0]
+    safe_parent = _normalize_whitespace(block_directory)
+    safe_base = _normalize_whitespace(base)
+    return f"{safe_parent}_{safe_base}"
 
 
 def _extract_genotype(path_parts: list[str]) -> str | None:
@@ -152,11 +178,10 @@ def build_output_paths(
     safe_genotype = _normalize_whitespace(genotype)
     muscle_group = _extract_muscle_group(muscle)
     safe_muscle = _normalize_whitespace(muscle_group)
-    base = os.path.splitext(os.path.basename(dm3_path))[0]
-    safe_base = _normalize_whitespace(base)
+    safe_stem = _build_prefixed_image_stem(dm3_path)
     out_dir = os.path.join(output_root, safe_genotype, safe_muscle)
-    out_tiff = os.path.join(out_dir, f"{safe_base}.tif")
-    out_json = os.path.join(out_dir, f"{safe_base}.json")
+    out_tiff = os.path.join(out_dir, f"{safe_stem}.tif")
+    out_json = os.path.join(out_dir, f"{safe_stem}.json")
     return out_tiff, out_json
 
 

@@ -106,19 +106,19 @@ class ImageRecord:
     magnification: float | None
 
 
-def parse_block_number(path: Path) -> int:
-    """Extract block number that follows SOL/TA in a filename.
+def parse_block_number(image_label: str) -> int:
+    """Extract block number that follows SOL/TA in an image label.
 
     Args:
-        path (Path): Metrics CSV path whose stem may contain tokens such as ``SOL_8`` or ``TA-1``.
+        image_label (str): Image label that may contain tokens such as ``SOL_8`` or ``TA-1``.
 
     Returns:
         int: Parsed block number that directly follows ``SOL`` or ``TA``.
     """
 
-    match = BLOCK_RE.search(path.stem)
+    match = BLOCK_RE.search(image_label)
     if not match:
-        raise ValueError(f"Unable to parse block number from: {path.name}")
+        raise ValueError(f"Unable to parse block number from image label: {image_label}")
     return int(match.group(2))
 
 
@@ -1142,8 +1142,8 @@ def main() -> None:
             if condition is None or muscle is None:
                 raise ValueError(f"Unknown condition/muscle in path: {metrics_path}")
 
-            block_num = parse_block_number(metrics_path)
             image_label = parse_image_label(metrics_path)
+            block_num = parse_block_number(image_label)
             image_record = image_records.get((condition, muscle, image_label))
             if image_record is None:
                 raise KeyError(

@@ -35,7 +35,7 @@ fits:
   soleus_density:
     muscle: "Soleus"
     metric: "Density"
-    repeat: false
+    repeat: true
     likelihood: "gamma"
     draws: 1500
     tune: 1500
@@ -44,7 +44,7 @@ fits:
   soleus_voronoi_cell_area_center_cv:
     muscle: "Soleus"
     metric: "Voronoi_Cell_Area_center_cv"
-    repeat: false
+    repeat: true
     likelihood: "gamma"
     draws: 10000
     tune: 20000
@@ -53,7 +53,7 @@ fits:
   soleus_ripley_l_integral:
     muscle: "Soleus"
     metric: "Ripley_L_integral"
-    repeat: false
+    repeat: true
     likelihood: "skew_student_t"
     draws: 10000
     tune: 20000
@@ -62,7 +62,7 @@ fits:
   soleus_pair_correlation_integral:
     muscle: "Soleus"
     metric: "Pair_Correlation_integral"
-    repeat: false
+    repeat: true
     likelihood: "skew_student_t"
     draws: 10000
     tune: 20000
@@ -71,7 +71,7 @@ fits:
   soleus_corrected_area_sum:
     muscle: "Soleus"
     metric: "Corrected_area_sum"
-    repeat: false
+    repeat: true
     likelihood: "lognormal"
     draws: 1500
     tune: 1500
@@ -80,7 +80,7 @@ fits:
   soleus_minimum_feret_diameter_sum:
     muscle: "Soleus"
     metric: "Minimum_Feret_Diameter_sum"
-    repeat: false
+    repeat: true
     likelihood: "lognormal"
     draws: 1500
     tune: 1500
@@ -89,7 +89,7 @@ fits:
   soleus_minimum_feret_diameter_mean:
     muscle: "Soleus"
     metric: "Minimum_Feret_Diameter_mean"
-    repeat: false
+    repeat: true
     likelihood: "gamma"
     draws: 1500
     tune: 1500
@@ -98,7 +98,7 @@ fits:
   soleus_elongation_mean:
     muscle: "Soleus"
     metric: "Elongation_mean"
-    repeat: false
+    repeat: true
     likelihood: "lognormal"
     draws: 1500
     tune: 1500
@@ -107,7 +107,7 @@ fits:
   soleus_circularity_mean:
     muscle: "Soleus"
     metric: "Circularity_mean"
-    repeat: false
+    repeat: true
     likelihood: "beta"
     draws: 1500
     tune: 1500
@@ -116,7 +116,7 @@ fits:
   soleus_solidity_mean:
     muscle: "Soleus"
     metric: "Solidity_mean"
-    repeat: false
+    repeat: true
     likelihood: "beta"
     draws: 1500
     tune: 1500
@@ -125,7 +125,7 @@ fits:
   soleus_3nnd_center_mean:
     muscle: "Soleus"
     metric: "3NND_center_mean"
-    repeat: false
+    repeat: true
     likelihood: "gamma"
     draws: 1500
     tune: 1500
@@ -134,7 +134,7 @@ fits:
   soleus_voronoi_cell_area_center_mean:
     muscle: "Soleus"
     metric: "Voronoi_Cell_Area_center_mean"
-    repeat: false
+    repeat: true
     likelihood: "lognormal"
     draws: 1500
     tune: 1500
@@ -143,7 +143,7 @@ fits:
   tibialis_anterior_density:
     muscle: "Tibialis Anterior"
     metric: "Density"
-    repeat: false
+    repeat: true
     likelihood: "gamma"
     draws: 1500
     tune: 1500
@@ -152,7 +152,7 @@ fits:
   tibialis_anterior_voronoi_cell_area_center_cv:
     muscle: "Tibialis Anterior"
     metric: "Voronoi_Cell_Area_center_cv"
-    repeat: false
+    repeat: true
     likelihood: "gamma"
     draws: 10000
     tune: 20000
@@ -161,7 +161,7 @@ fits:
   tibialis_anterior_ripley_l_integral:
     muscle: "Tibialis Anterior"
     metric: "Ripley_L_integral"
-    repeat: false
+    repeat: true
     likelihood: "skew_student_t"
     draws: 10000
     tune: 20000
@@ -179,7 +179,7 @@ fits:
   tibialis_anterior_corrected_area_sum:
     muscle: "Tibialis Anterior"
     metric: "Corrected_area_sum"
-    repeat: false
+    repeat: true
     likelihood: "lognormal"
     draws: 1500
     tune: 1500
@@ -188,7 +188,7 @@ fits:
   tibialis_anterior_minimum_feret_diameter_sum:
     muscle: "Tibialis Anterior"
     metric: "Minimum_Feret_Diameter_sum"
-    repeat: false
+    repeat: true
     likelihood: "lognormal"
     draws: 1500
     tune: 1500
@@ -197,7 +197,7 @@ fits:
   tibialis_anterior_minimum_feret_diameter_mean:
     muscle: "Tibialis Anterior"
     metric: "Minimum_Feret_Diameter_mean"
-    repeat: false
+    repeat: true
     likelihood: "gamma"
     draws: 1500
     tune: 1500
@@ -206,7 +206,7 @@ fits:
   tibialis_anterior_elongation_mean:
     muscle: "Tibialis Anterior"
     metric: "Elongation_mean"
-    repeat: false
+    repeat: true
     likelihood: "lognormal"
     draws: 1500
     tune: 1500
@@ -215,7 +215,7 @@ fits:
   tibialis_anterior_circularity_mean:
     muscle: "Tibialis Anterior"
     metric: "Circularity_mean"
-    repeat: false
+    repeat: true
     likelihood: "beta"
     draws: 1500
     tune: 1500
@@ -224,7 +224,7 @@ fits:
   tibialis_anterior_solidity_mean:
     muscle: "Tibialis Anterior"
     metric: "Solidity_mean"
-    repeat: false
+    repeat: true
     likelihood: "beta"
     draws: 1500
     tune: 1500
@@ -233,7 +233,7 @@ fits:
   tibialis_anterior_3nnd_center_mean:
     muscle: "Tibialis Anterior"
     metric: "3NND_center_mean"
-    repeat: false
+    repeat: true
     likelihood: "gamma"
     draws: 1500
     tune: 1500
@@ -242,7 +242,7 @@ fits:
   tibialis_anterior_voronoi_cell_area_center_mean:
     muscle: "Tibialis Anterior"
     metric: "Voronoi_Cell_Area_center_mean"
-    repeat: false
+    repeat: true
     likelihood: "lognormal"
     draws: 1500
     tune: 1500
