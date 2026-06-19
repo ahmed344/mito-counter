@@ -97,16 +97,18 @@ def short_compartment_label(compartment: str) -> str:
 
 
 def comparison_label(muscle: str, compartment: str) -> str:
-    """Build a combined muscle-compartment label for plotting.
+    """Build a compact DMD_1X comparison label for plotting.
 
     Args:
         muscle (str): Muscle label.
         compartment (str): Compartment label.
 
     Returns:
-        str: Compact comparison label.
+        str: Muscle-only label for pooled analyses, otherwise muscle-compartment label.
     """
 
+    if str(compartment) == dmd_1x_metrics.ALL_COMPARTMENTS_LABEL:
+        return str(muscle)
     return f"{muscle} | {short_compartment_label(compartment)}"
 
 
@@ -125,6 +127,8 @@ def dmd_1x_fit_title(row: pd.Series) -> str:
     compartment = str(row.get("compartment", ""))
     model_level = str(row.get("model_level", "instance"))
     scope = " image summary" if model_level == "image_summary" else " instances"
+    if compartment == dmd_1x_metrics.ALL_COMPARTMENTS_LABEL:
+        return f"{metric} - {muscle}{scope}"
     return f"{metric} - {muscle} | {short_compartment_label(compartment)}{scope}"
 
 
