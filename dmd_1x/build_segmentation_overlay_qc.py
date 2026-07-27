@@ -118,7 +118,7 @@ def strip_source_suffix(path: Path) -> str:
 
 
 def is_primary_source_image(path: Path) -> bool:
-    """Check whether a TIFF path is a source image rather than a derived output.
+    """Check whether a TIFF path is a primary corrected image.
 
     Args:
         path (Path): Candidate TIFF path.
@@ -126,11 +126,10 @@ def is_primary_source_image(path: Path) -> bool:
     Returns:
         bool: ``True`` when the path should be considered for overlay rendering.
     """
-    if path.suffix.lower() not in {".tif", ".tiff"}:
+    name_lower = path.name.lower()
+    if not (name_lower.endswith("_corrected.tif") or name_lower.endswith("_corrected.tiff")):
         return False
-    stem = path.stem
-    if stem.endswith("_corrected"):
-        stem = stem[: -len("_corrected")]
+    stem = strip_source_suffix(path)
     stem_lower = stem.lower()
     if stem_lower in EXCLUDED_SOURCE_STEMS:
         return False
@@ -142,21 +141,21 @@ def discover_source_images(
     input_file: Path | None,
     limit: int | None,
 ) -> list[Path]:
-    """Discover source TIFF images for DMD_1X overlay rendering.
+    """Discover corrected TIFF images for DMD_1X overlay rendering.
 
     Args:
-        input_root (Path): Root directory scanned recursively for primary TIFF images.
-        input_file (Path | None): Optional single TIFF image to process.
+        input_root (Path): Root directory scanned recursively for corrected TIFF images.
+        input_file (Path | None): Optional single corrected TIFF image to process.
         limit (int | None): Optional maximum number of image paths to return.
 
     Returns:
-        list[Path]: Sorted list of source image paths.
+        list[Path]: Sorted list of corrected source image paths.
     """
     if input_file is not None:
         if not input_file.is_file():
             raise FileNotFoundError(f"Input file not found: {input_file}")
         if not is_primary_source_image(input_file):
-            raise ValueError(f"Input file is not a primary source TIFF: {input_file}")
+            raise ValueError(f"Input file is not a corrected source TIFF: {input_file}")
         source_paths = [input_file]
     else:
         source_paths = sorted(
