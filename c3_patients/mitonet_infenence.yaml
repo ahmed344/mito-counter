@@ -5,7 +5,7 @@ paths:
   # Set an absolute path or a path relative to input_dir for a one-image test.
   input_file: null
   model_pth: /workspaces/mito-counter/models/MitoNet_v1.pth
-  config_yaml: /workspaces/mito-counter/models/MitoNet_v1_finetuned/FinetunedModel_2.yaml
+  config_yaml: /workspaces/mito-counter/models/MitoNet_v1.yaml
   downsample_factor: 4.0
   device: cuda
 

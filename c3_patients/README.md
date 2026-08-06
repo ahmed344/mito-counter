@@ -19,7 +19,10 @@ Preview the selected inputs and output paths:
 python c3_patients/dm3_to_tiff.py --dry-run
 ```
 
-Convert the DM3 files to 8-bit TIFF files and JSON metadata sidecars:
+Convert the DM3 files to 8-bit TIFF files and JSON metadata sidecars. Existing
+8-bit pixels remain unchanged. Higher-depth images are linearly mapped from
+their individual minimum and maximum to `0–255`, preserving each histogram's
+overall shape without percentile clipping:
 
 ```bash
 python c3_patients/dm3_to_tiff.py
@@ -49,6 +52,9 @@ python tiff_background_correct.py \
 ```
 
 Each source TIFF receives a sibling file named `*_corrected.tif`.
+Corrected TIFFs preserve the source image dtype and bit depth without an
+additional contrast stretch. Values are clipped only when needed to fit the
+source dtype after flat-field correction.
 
 ## 3. Segment mitochondria
 

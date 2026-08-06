@@ -8,7 +8,7 @@ paths:
   # Path to the TorchScript (.pth) model file.
   model_pth: /workspaces/mito-counter/models/MitoNet_v1.pth
   # Path to the model config YAML used for norms and metadata.
-  config_yaml: /workspaces/mito-counter/models/MitoNet_v1_finetuned/FinetunedModel_2.yaml
+  config_yaml: /workspaces/mito-counter/models/MitoNet_v1.yaml
   # Downsample factor applied before inference (>= 1.0).
   downsample_factor: 4.0
   # Device for inference; must be "cuda".

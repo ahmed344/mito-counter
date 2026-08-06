@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import csv
 from typing import Optional
@@ -627,16 +628,40 @@ def resolve_inference_images(input_dir: Path, input_file: Optional[str]) -> list
     )
 
 
-def main() -> None:
-    """Run batch inference over the input directory.
+def parse_args() -> argparse.Namespace:
+    """Parse MitoNet inference command-line arguments.
+
+    Args:
+        None: This function reads arguments from the command line.
 
     Returns:
-        None
+        argparse.Namespace: Parsed arguments containing the inference config path.
+    """
+    parser = argparse.ArgumentParser(
+        description="Run MitoNet inference using a selected YAML configuration."
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=INFERENCE_CONFIG,
+        help=f"Inference YAML path (default: {INFERENCE_CONFIG}).",
+    )
+    return parser.parse_args()
+
+
+def main(config_path: Path = INFERENCE_CONFIG) -> None:
+    """Run batch inference using a YAML configuration.
+
+    Args:
+        config_path (Path): Path to the inference YAML configuration.
+
+    Returns:
+        None: This function writes segmentation images and metric CSV files.
     """
     # Load inference configuration and validate required fields.
-    if not INFERENCE_CONFIG.is_file():
-        raise FileNotFoundError(f"Missing inference config: {INFERENCE_CONFIG}")
-    with open(INFERENCE_CONFIG, "r", encoding="utf-8") as handle:
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Missing inference config: {config_path}")
+    with open(config_path, "r", encoding="utf-8") as handle:
         inference_cfg = yaml.safe_load(handle)
 
     paths_cfg = inference_cfg["paths"]
@@ -727,4 +752,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(parse_args().config)

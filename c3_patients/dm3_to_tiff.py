@@ -438,55 +438,49 @@ def _axis_calibrations(signal: Any) -> tuple[list[dict[str, Any]], float | None]
 
 
 def _prepare_for_tiff(data: np.ndarray) -> tuple[np.ndarray, dict[str, Any]]:
-    """Robustly rescale source pixels to an unsigned 8-bit TIFF.
+    """Convert source pixels to 8-bit with per-image linear scaling.
 
     Args:
         data (np.ndarray): Source image array loaded by HyperSpy.
 
     Returns:
-        tuple[np.ndarray, dict[str, Any]]: Converted pixels and detailed
+        tuple[np.ndarray, dict[str, Any]]: Eight-bit pixels and per-image
             conversion metadata.
     """
     array = np.asarray(data)
     if array.size == 0:
         raise ValueError("DM3 image data is empty")
-    finite = np.isfinite(array)
-    finite_values = array[finite]
+    if array.dtype == np.dtype(np.uint8):
+        saved = array
+        method = "preserve_native_uint8"
+        mapping_min = 0.0
+        mapping_max = 255.0
+    elif np.issubdtype(array.dtype, np.number):
+        if not np.isfinite(array).all():
+            raise ValueError("DM3 image contains non-finite pixel values")
+        mapping_min = float(np.min(array))
+        mapping_max = float(np.max(array))
+        if mapping_max == mapping_min:
+            saved = np.zeros(array.shape, dtype=np.uint8)
+            method = "constant_image_to_zero_uint8"
+        else:
+            normalized = (array.astype(np.float64) - mapping_min) / (
+                mapping_max - mapping_min
+            )
+            saved = np.rint(np.clip(normalized, 0.0, 1.0) * 255.0).astype(np.uint8)
+            method = "per_image_minmax_to_uint8"
+    else:
+        raise TypeError(f"Unsupported DM3 pixel dtype: {array.dtype}")
+
     conversion: dict[str, Any] = {
-        "method": "",
+        "method": method,
         "original_dtype": str(array.dtype),
         "original_shape": list(array.shape),
-        "finite_pixel_count": int(finite.sum()),
-        "non_finite_pixel_count": int(array.size - finite.sum()),
-        "original_min": None,
-        "original_max": None,
-        "lower_percentile": None,
-        "upper_percentile": None,
+        "mapping_min": mapping_min,
+        "mapping_max": mapping_max,
         "saved_dtype": "uint8",
     }
-    if finite_values.size == 0:
-        conversion["method"] = "all_non_finite_to_zero_uint8"
-        return np.zeros(array.shape, dtype=np.uint8), conversion
-
-    data_min = float(np.min(finite_values))
-    data_max = float(np.max(finite_values))
-    conversion["original_min"] = data_min
-    conversion["original_max"] = data_max
-    if data_max == data_min:
-        conversion["method"] = "constant_to_zero_uint8"
-        return np.zeros(array.shape, dtype=np.uint8), conversion
-
-    lower, upper = np.percentile(finite_values, (1.0, 99.8))
-    lower = float(lower)
-    upper = float(upper)
-    if upper <= lower:
-        lower, upper = data_min, data_max
-    conversion["method"] = "percentile_rescale_to_uint8"
-    conversion["lower_percentile"] = lower
-    conversion["upper_percentile"] = upper
-    working = np.nan_to_num(array.astype(np.float64), nan=lower, posinf=upper, neginf=lower)
-    scaled = np.clip((working - lower) / (upper - lower), 0.0, 1.0)
-    return (scaled * np.iinfo(np.uint8).max).astype(np.uint8), conversion
+    return saved, conversion
 
 
 def export_dm3(

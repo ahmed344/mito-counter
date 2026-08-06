@@ -20,6 +20,11 @@ ROBUST_Y_LOWER_QUANTILE = 0.01
 ROBUST_Y_UPPER_QUANTILE = 0.99
 SUPERPLOT_TITLE_PAD = 54
 SUPERPLOT_LAYOUT_TOP = 0.92
+SUPERPLOT_LEGEND_FONT_SIZE = 8
+SUPERPLOT_LEGEND_MARKERS_SCALE = 0.75
+SUPERPLOT_LEGEND_WIDTH_FRACTION = 0.17
+SUPERVIOLIN_OUTLINE_LINEWIDTH = 0.35
+SUPERVIOLIN_SEPARATOR_LINEWIDTH = 0.25
 SUPERPLOT_ANNOTATION_BASE_Y = 1.0
 SUPERPLOT_ANNOTATION_BRACKET_HEIGHT = 0.025
 SUPERPLOT_ANNOTATION_TEXT_OFFSET = 0.008
@@ -807,7 +812,7 @@ def finalize_superplot(
         None: The function formats and optionally saves the current figure.
     """
     ax.set_xticks(tick_positions)
-    ax.set_xticklabels(tick_labels, rotation=20, ha="right")
+    ax.set_xticklabels(tick_labels, rotation=0, ha="center")
     ax.set_xlabel(x, fontsize=12)
     ax.set_ylabel(f"{y}{format_unit_label(y, unit_dict)}", fontsize=12)
     ax.set_title(title, fontsize=14, pad=SUPERPLOT_TITLE_PAD)
@@ -820,6 +825,8 @@ def finalize_superplot(
             hue_order=hue_order,
         )
     ax.grid(axis="y", alpha=0.22, linestyle="--")
+    sns.despine(ax=ax)
+    plt.tight_layout(rect=(0.0, 0.0, 1.0, SUPERPLOT_LAYOUT_TOP))
     if block_palette:
         handles = [
             plt.Line2D(
@@ -835,12 +842,21 @@ def finalize_superplot(
             )
             for block_label, color in block_palette.items()
         ]
-        ax.legend(handles=handles, frameon=True)
+        box = ax.get_position()
+        legend_width = SUPERPLOT_LEGEND_WIDTH_FRACTION
+        ax.set_position([box.x0, box.y0, box.width * (1.0 - legend_width), box.height])
+        ax.legend(
+            handles=handles,
+            frameon=True,
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            fontsize=SUPERPLOT_LEGEND_FONT_SIZE,
+            markerscale=SUPERPLOT_LEGEND_MARKERS_SCALE,
+            borderaxespad=0.0,
+        )
 
-    sns.despine(ax=ax)
-    plt.tight_layout(rect=(0.0, 0.0, 1.0, SUPERPLOT_LAYOUT_TOP))
     if output_path is not None:
-        plt.savefig(output_path, dpi=300)
+        plt.savefig(output_path, dpi=300, bbox_inches="tight", pad_inches=0.02)
     maybe_show_current_figure()
     plt.close()
     return None
@@ -1064,13 +1080,13 @@ def plot_super_violin(
                     stripe_right,
                     y_grid,
                     color="black",
-                    linewidth=0.8,
+                    linewidth=SUPERVIOLIN_SEPARATOR_LINEWIDTH,
                     zorder=3,
                 )
             current_left = stripe_right
 
-        ax.plot(left_edge, y_grid, color="black", linewidth=1.0, zorder=3)
-        ax.plot(right_edge, y_grid, color="black", linewidth=1.0, zorder=3)
+        ax.plot(left_edge, y_grid, color="black", linewidth=SUPERVIOLIN_OUTLINE_LINEWIDTH, zorder=3)
+        ax.plot(right_edge, y_grid, color="black", linewidth=SUPERVIOLIN_OUTLINE_LINEWIDTH, zorder=3)
         add_superplot_summary(
             ax=ax,
             group_data=group_data,

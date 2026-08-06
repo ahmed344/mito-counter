@@ -6,7 +6,6 @@ from typing import Iterable, Optional, Tuple
 
 import cv2
 import numpy as np
-from skimage import exposure
 import tifffile as tif
 
 
@@ -60,7 +59,9 @@ def shading_correct_flatfield(
         eps (float): Small epsilon to avoid division by zero.
 
     Returns:
-        Tuple of (corrected_float, corrected_u8, illumination_estimate).
+        Tuple[np.ndarray, np.ndarray, np.ndarray]: Corrected floating-point
+            pixels, corrected pixels in the input dtype, and the illumination
+            estimate.
     """
     # Work in float for stable correction math.
     raw_f = raw.astype(np.float32)
@@ -74,13 +75,17 @@ def shading_correct_flatfield(
     scale = np.median(illum[illum > 0]) if np.any(illum > 0) else np.median(illum)
     corrected = raw_f / (illum + eps) * scale
 
-    # Robust contrast stretch to avoid outlier domination.
-    p1, p99 = np.percentile(corrected, (1, 99.8))
-    corrected_u8 = exposure.rescale_intensity(
-        corrected, in_range=(p1, p99), out_range=(0, 255)
-    ).astype(np.uint8)
+    if np.issubdtype(raw.dtype, np.integer):
+        dtype_limits = np.iinfo(raw.dtype)
+        corrected_native = np.clip(
+            np.rint(corrected), dtype_limits.min, dtype_limits.max
+        ).astype(raw.dtype)
+    elif np.issubdtype(raw.dtype, np.floating):
+        corrected_native = corrected.astype(raw.dtype)
+    else:
+        raise TypeError(f"Unsupported TIFF image dtype: {raw.dtype}")
 
-    return corrected, corrected_u8, illum
+    return corrected, corrected_native, illum
 
 
 def build_corrected_path(input_path: str) -> str:
@@ -110,8 +115,8 @@ def process_file(path: str, sigma: int) -> str:
     out_path = build_corrected_path(path)
     raw_img = tif.imread(path)
     # Apply background correction and save.
-    _, corrected_u8, _ = shading_correct_flatfield(raw_img, sigma=sigma)
-    tif.imwrite(out_path, corrected_u8, photometric="minisblack")
+    _, corrected_native, _ = shading_correct_flatfield(raw_img, sigma=sigma)
+    tif.imwrite(out_path, corrected_native, photometric="minisblack")
     return out_path
 
 
