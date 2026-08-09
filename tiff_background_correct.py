@@ -45,6 +45,8 @@ class CorrectionConfig:
         input_file (Optional[str]): Optional single TIFF path.
         gaussian_enabled (bool): Whether Gaussian flat-field correction is applied.
         sigma (int): Gaussian illumination-estimation sigma.
+        background_downsample_factor (int): Coarse-resolution factor used for
+            Gaussian illumination estimation.
         clahe_enabled (bool): Whether CLAHE is applied after correction.
         clahe_clip_limit (float): CLAHE contrast clip limit.
         clahe_tile_grid_size (tuple[int, int]): CLAHE grid columns and rows.
@@ -65,6 +67,7 @@ class CorrectionConfig:
     input_file: Optional[str]
     gaussian_enabled: bool
     sigma: int
+    background_downsample_factor: int
     clahe_enabled: bool
     clahe_clip_limit: float
     clahe_tile_grid_size: tuple[int, int]
@@ -209,6 +212,18 @@ def resolve_config(
     if isinstance(sigma, bool) or not isinstance(sigma, int) or sigma <= 0:
         raise ValueError("sigma must be a positive integer")
 
+    background_downsample_factor = (
+        args.background_downsample_factor
+        if args.background_downsample_factor is not None
+        else processing.get("background_downsample_factor", 1)
+    )
+    if (
+        isinstance(background_downsample_factor, bool)
+        or not isinstance(background_downsample_factor, int)
+        or background_downsample_factor <= 0
+    ):
+        raise ValueError("background_downsample_factor must be a positive integer")
+
     clahe_enabled = (
         args.clahe
         if args.clahe is not None
@@ -337,6 +352,7 @@ def resolve_config(
         input_file=input_file,
         gaussian_enabled=gaussian_enabled,
         sigma=sigma,
+        background_downsample_factor=background_downsample_factor,
         clahe_enabled=clahe_enabled,
         clahe_clip_limit=float(clahe_clip_limit),
         clahe_tile_grid_size=(int(tile_grid[0]), int(tile_grid[1])),
@@ -354,7 +370,10 @@ def resolve_config(
 
 
 def shading_correct_flatfield(
-    raw: np.ndarray, sigma: int = 400, eps: float = 1e-6
+    raw: np.ndarray,
+    sigma: int = 400,
+    eps: float = 1e-6,
+    background_downsample_factor: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Apply flat-field background correction with a Gaussian illumination model.
 
@@ -362,6 +381,9 @@ def shading_correct_flatfield(
         raw (np.ndarray): 2D image array.
         sigma (int): Gaussian sigma for illumination estimation.
         eps (float): Small epsilon to avoid division by zero.
+        background_downsample_factor (int): Positive factor used to reduce the
+            image before blurring. The Gaussian sigma is reduced by the same
+            factor, and the illumination estimate is restored to full resolution.
 
     Returns:
         Tuple[np.ndarray, np.ndarray, np.ndarray]: Corrected floating-point
@@ -371,10 +393,40 @@ def shading_correct_flatfield(
     # Work in float for stable correction math.
     raw_f = raw.astype(np.float32)
 
-    # Estimate illumination via heavy Gaussian blur.
-    illum = cv2.GaussianBlur(
-        raw_f, ksize=(0, 0), sigmaX=sigma, sigmaY=sigma, borderType=cv2.BORDER_REFLECT
-    )
+    if (
+        isinstance(background_downsample_factor, bool)
+        or not isinstance(background_downsample_factor, int)
+        or background_downsample_factor <= 0
+    ):
+        raise ValueError("background_downsample_factor must be a positive integer")
+
+    # Estimate slowly varying illumination at a cheaper coarse resolution.
+    if background_downsample_factor == 1:
+        illum = cv2.GaussianBlur(
+            raw_f,
+            ksize=(0, 0),
+            sigmaX=sigma,
+            sigmaY=sigma,
+            borderType=cv2.BORDER_REFLECT,
+        )
+    else:
+        height, width = raw_f.shape
+        coarse_size = (
+            max(1, int(round(width / background_downsample_factor))),
+            max(1, int(round(height / background_downsample_factor))),
+        )
+        coarse = cv2.resize(raw_f, coarse_size, interpolation=cv2.INTER_AREA)
+        coarse_sigma = sigma / background_downsample_factor
+        coarse_illum = cv2.GaussianBlur(
+            coarse,
+            ksize=(0, 0),
+            sigmaX=coarse_sigma,
+            sigmaY=coarse_sigma,
+            borderType=cv2.BORDER_REFLECT,
+        )
+        illum = cv2.resize(
+            coarse_illum, (width, height), interpolation=cv2.INTER_LINEAR
+        )
 
     # Flat-field division with a robust scale factor.
     scale = np.median(illum[illum > 0]) if np.any(illum > 0) else np.median(illum)
@@ -542,6 +594,7 @@ def process_file(
     path: str,
     gaussian_enabled: bool,
     sigma: int,
+    background_downsample_factor: int,
     clahe_enabled: bool,
     clahe_clip_limit: float,
     clahe_tile_grid_size: tuple[int, int],
@@ -557,6 +610,8 @@ def process_file(
         path (str): Input TIFF path.
         gaussian_enabled (bool): Whether to apply Gaussian flat-field correction.
         sigma (int): Gaussian sigma for illumination estimation.
+        background_downsample_factor (int): Coarse-resolution factor used for
+            Gaussian illumination estimation.
         clahe_enabled (bool): Whether to apply CLAHE after correction.
         clahe_clip_limit (float): CLAHE contrast clip limit.
         clahe_tile_grid_size (tuple[int, int]): CLAHE grid columns and rows.
@@ -572,7 +627,11 @@ def process_file(
     out_path = build_corrected_path(path)
     raw_img = tif.imread(path)
     if gaussian_enabled:
-        _, corrected_native, _ = shading_correct_flatfield(raw_img, sigma=sigma)
+        _, corrected_native, _ = shading_correct_flatfield(
+            raw_img,
+            sigma=sigma,
+            background_downsample_factor=background_downsample_factor,
+        )
     else:
         corrected_native = raw_img
     if clahe_enabled:
@@ -685,6 +744,15 @@ def parse_args() -> argparse.Namespace:
         help="Gaussian sigma override for background estimation.",
     )
     parser.add_argument(
+        "--background-downsample-factor",
+        type=int,
+        default=None,
+        help=(
+            "Positive coarse-resolution factor for background estimation; "
+            "1 uses full resolution."
+        ),
+    )
+    parser.add_argument(
         "--clahe",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -789,6 +857,7 @@ def main() -> None:
                 path,
                 config.gaussian_enabled,
                 config.sigma,
+                config.background_downsample_factor,
                 config.clahe_enabled,
                 config.clahe_clip_limit,
                 config.clahe_tile_grid_size,

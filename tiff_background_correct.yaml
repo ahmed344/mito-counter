@@ -12,7 +12,9 @@ processing:
   # Whether to apply Gaussian flat-field background correction.
   gaussian_enabled: true
   # Gaussian sigma used to estimate the slowly varying illumination background.
-  sigma: 1000
+  sigma: 1024
+  # Coarse-resolution factor for illumination estimation; 1 uses full resolution.
+  background_downsample_factor: 8
   # Whether to apply CLAHE after flat-field background correction.
   clahe_enabled: false
   # CLAHE contrast clip limit; larger values produce stronger local contrast.
