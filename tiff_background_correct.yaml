@@ -1,0 +1,28 @@
+# Input selection for TIFF background correction.
+paths:
+  # Dataset preset used only when input_root and input_file are null.
+  dataset: calpaine_3
+  # Root directory searched recursively for source TIFF files.
+  input_root: /workspaces/mito-counter/data/Calpaine_3_patients/Processed
+  # Optional single TIFF path; set to null to process the full input_root tree.
+  input_file: null
+
+# Image-processing settings.
+processing:
+  # Whether to apply Gaussian flat-field background correction.
+  gaussian_enabled: false
+  # Gaussian sigma used to estimate the slowly varying illumination background.
+  sigma: 400
+  # Whether to apply CLAHE after flat-field background correction.
+  clahe_enabled: false
+  # CLAHE contrast clip limit; larger values produce stronger local contrast.
+  clahe_clip_limit: 2.0
+  # CLAHE tile grid as [columns, rows]; both values must be positive integers.
+  clahe_tile_grid_size: [8, 8]
+
+# Execution settings.
+runtime:
+  # Parallel process count; null automatically uses one fewer than the CPU count.
+  workers: null
+  # Whether to print planned outputs without reading or writing image data.
+  dry_run: false
