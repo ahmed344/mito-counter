@@ -48,6 +48,11 @@ class CorrectionConfig:
         clahe_enabled (bool): Whether CLAHE is applied after correction.
         clahe_clip_limit (float): CLAHE contrast clip limit.
         clahe_tile_grid_size (tuple[int, int]): CLAHE grid columns and rows.
+        minmax_stretch_enabled (bool): Whether exact min-max stretching is applied.
+        percentile_stretch_enabled (bool): Whether percentile stretching is applied.
+        percentile_lower (float): Lower percentile used for stretching.
+        percentile_upper (float): Upper percentile used for stretching.
+        stretch_output_range (tuple[float, float]): Stretch output minimum and maximum.
         workers (int): Parallel worker count.
         dry_run (bool): Whether to print outputs without processing images.
 
@@ -63,6 +68,11 @@ class CorrectionConfig:
     clahe_enabled: bool
     clahe_clip_limit: float
     clahe_tile_grid_size: tuple[int, int]
+    minmax_stretch_enabled: bool
+    percentile_stretch_enabled: bool
+    percentile_lower: float
+    percentile_upper: float
+    stretch_output_range: tuple[float, float]
     workers: int
     dry_run: bool
 
@@ -236,6 +246,74 @@ def resolve_config(
             "clahe_tile_grid_size must contain two positive integers"
         )
 
+    minmax_stretch_enabled = (
+        args.minmax_stretch
+        if args.minmax_stretch is not None
+        else processing.get("minmax_stretch_enabled")
+    )
+    if not isinstance(minmax_stretch_enabled, bool):
+        raise ValueError("minmax_stretch_enabled must be true or false")
+
+    percentile_stretch_enabled = (
+        args.percentile_stretch
+        if args.percentile_stretch is not None
+        else processing.get("percentile_stretch_enabled")
+    )
+    if not isinstance(percentile_stretch_enabled, bool):
+        raise ValueError("percentile_stretch_enabled must be true or false")
+
+    enabled_contrast_methods = sum(
+        (
+            clahe_enabled,
+            minmax_stretch_enabled,
+            percentile_stretch_enabled,
+        )
+    )
+    if enabled_contrast_methods > 1:
+        raise ValueError(
+            "Enable at most one contrast method: CLAHE, min-max stretching, "
+            "or percentile stretching"
+        )
+
+    percentile_lower = (
+        args.percentile_lower
+        if args.percentile_lower is not None
+        else processing.get("percentile_lower")
+    )
+    percentile_upper = (
+        args.percentile_upper
+        if args.percentile_upper is not None
+        else processing.get("percentile_upper")
+    )
+    if (
+        isinstance(percentile_lower, bool)
+        or isinstance(percentile_upper, bool)
+        or not isinstance(percentile_lower, (int, float))
+        or not isinstance(percentile_upper, (int, float))
+        or not 0 <= percentile_lower < percentile_upper <= 100
+    ):
+        raise ValueError(
+            "percentile bounds must satisfy 0 <= lower < upper <= 100"
+        )
+
+    stretch_output_range = (
+        args.stretch_output_range
+        if args.stretch_output_range is not None
+        else processing.get("stretch_output_range")
+    )
+    if (
+        not isinstance(stretch_output_range, (list, tuple))
+        or len(stretch_output_range) != 2
+        or any(
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            for value in stretch_output_range
+        )
+        or stretch_output_range[0] >= stretch_output_range[1]
+    ):
+        raise ValueError(
+            "stretch_output_range must contain two increasing numeric values"
+        )
+
     configured_workers = (
         args.workers if args.workers is not None else runtime.get("workers")
     )
@@ -262,6 +340,14 @@ def resolve_config(
         clahe_enabled=clahe_enabled,
         clahe_clip_limit=float(clahe_clip_limit),
         clahe_tile_grid_size=(int(tile_grid[0]), int(tile_grid[1])),
+        minmax_stretch_enabled=minmax_stretch_enabled,
+        percentile_stretch_enabled=percentile_stretch_enabled,
+        percentile_lower=float(percentile_lower),
+        percentile_upper=float(percentile_upper),
+        stretch_output_range=(
+            float(stretch_output_range[0]),
+            float(stretch_output_range[1]),
+        ),
         workers=workers,
         dry_run=dry_run,
     )
@@ -332,6 +418,113 @@ def apply_clahe(
     return clahe.apply(np.ascontiguousarray(image))
 
 
+def linear_rescale(
+    image: np.ndarray,
+    input_range: tuple[float, float],
+    output_range: tuple[float, float],
+) -> np.ndarray:
+    """Linearly rescale and clip image intensities into an output interval.
+
+    Args:
+        image (np.ndarray): Numeric source image.
+        input_range (tuple[float, float]): Intensities mapped to output endpoints.
+        output_range (tuple[float, float]): Desired output minimum and maximum.
+
+    Returns:
+        np.ndarray: Rescaled image with the source dtype and shape.
+    """
+    if not (
+        np.issubdtype(image.dtype, np.integer)
+        or np.issubdtype(image.dtype, np.floating)
+    ):
+        raise TypeError(f"Stretching requires numeric real pixels, got {image.dtype}")
+    if not np.isfinite(image).all():
+        raise ValueError("Stretching requires finite image pixels")
+
+    input_min, input_max = input_range
+    output_min, output_max = output_range
+    if output_min >= output_max:
+        raise ValueError("Stretch output minimum must be less than its maximum")
+    if np.issubdtype(image.dtype, np.integer):
+        dtype_limits = np.iinfo(image.dtype)
+        if output_min < dtype_limits.min or output_max > dtype_limits.max:
+            raise ValueError(
+                f"Output range {output_range} does not fit dtype {image.dtype}"
+            )
+
+    if not np.isfinite(input_min) or not np.isfinite(input_max):
+        raise ValueError("Stretch input range must be finite")
+    if input_max <= input_min:
+        fill_value = np.rint(output_min) if np.issubdtype(
+            image.dtype, np.integer
+        ) else output_min
+        return np.full(image.shape, fill_value, dtype=image.dtype)
+
+    normalized = (image.astype(np.float64) - input_min) / (input_max - input_min)
+    stretched = (
+        np.clip(normalized, 0.0, 1.0) * (output_max - output_min) + output_min
+    )
+    if np.issubdtype(image.dtype, np.integer):
+        stretched = np.rint(stretched)
+    return stretched.astype(image.dtype)
+
+
+def apply_minmax_stretch(
+    image: np.ndarray, output_range: tuple[float, float]
+) -> np.ndarray:
+    """Stretch an image's exact minimum and maximum to an output range.
+
+    Args:
+        image (np.ndarray): Numeric source image.
+        output_range (tuple[float, float]): Desired output minimum and maximum.
+
+    Returns:
+        np.ndarray: Min-max-stretched image with the source dtype and shape.
+    """
+    if image.size == 0:
+        raise ValueError("Cannot stretch an empty image")
+    return linear_rescale(
+        image,
+        input_range=(float(np.min(image)), float(np.max(image))),
+        output_range=output_range,
+    )
+
+
+def apply_percentile_stretch(
+    image: np.ndarray,
+    lower_percentile: float,
+    upper_percentile: float,
+    output_range: tuple[float, float],
+) -> np.ndarray:
+    """Stretch configured percentile bounds and clip intensities outside them.
+
+    Args:
+        image (np.ndarray): Numeric source image.
+        lower_percentile (float): Lower percentile in the inclusive 0-100 range.
+        upper_percentile (float): Upper percentile in the inclusive 0-100 range.
+        output_range (tuple[float, float]): Desired output minimum and maximum.
+
+    Returns:
+        np.ndarray: Percentile-stretched image with the source dtype and shape.
+    """
+    if image.size == 0:
+        raise ValueError("Cannot stretch an empty image")
+    if not 0 <= lower_percentile < upper_percentile <= 100:
+        raise ValueError(
+            "Percentile bounds must satisfy 0 <= lower < upper <= 100"
+        )
+    if not np.isfinite(image).all():
+        raise ValueError("Percentile stretching requires finite image pixels")
+    input_min, input_max = np.percentile(
+        image, (lower_percentile, upper_percentile)
+    )
+    return linear_rescale(
+        image,
+        input_range=(float(input_min), float(input_max)),
+        output_range=output_range,
+    )
+
+
 def build_corrected_path(input_path: str) -> str:
     """Construct the output path with a _corrected suffix.
 
@@ -352,8 +545,13 @@ def process_file(
     clahe_enabled: bool,
     clahe_clip_limit: float,
     clahe_tile_grid_size: tuple[int, int],
+    minmax_stretch_enabled: bool,
+    percentile_stretch_enabled: bool,
+    percentile_lower: float,
+    percentile_upper: float,
+    stretch_output_range: tuple[float, float],
 ) -> str:
-    """Read, optionally correct background/CLAHE, and write a corrected TIFF.
+    """Read, optionally correct and enhance, and write a corrected TIFF.
 
     Args:
         path (str): Input TIFF path.
@@ -362,6 +560,11 @@ def process_file(
         clahe_enabled (bool): Whether to apply CLAHE after correction.
         clahe_clip_limit (float): CLAHE contrast clip limit.
         clahe_tile_grid_size (tuple[int, int]): CLAHE grid columns and rows.
+        minmax_stretch_enabled (bool): Whether to apply exact min-max stretching.
+        percentile_stretch_enabled (bool): Whether to apply percentile stretching.
+        percentile_lower (float): Lower stretching percentile.
+        percentile_upper (float): Upper stretching percentile.
+        stretch_output_range (tuple[float, float]): Stretch output endpoints.
 
     Returns:
         str: Output path of the corrected TIFF.
@@ -377,6 +580,17 @@ def process_file(
             corrected_native,
             clip_limit=clahe_clip_limit,
             tile_grid_size=clahe_tile_grid_size,
+        )
+    elif minmax_stretch_enabled:
+        corrected_native = apply_minmax_stretch(
+            corrected_native, output_range=stretch_output_range
+        )
+    elif percentile_stretch_enabled:
+        corrected_native = apply_percentile_stretch(
+            corrected_native,
+            lower_percentile=percentile_lower,
+            upper_percentile=percentile_upper,
+            output_range=stretch_output_range,
         )
     tif.imwrite(out_path, corrected_native, photometric="minisblack")
     return out_path
@@ -409,8 +623,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Apply YAML-configured optional Gaussian flat-field correction and "
-            "optional CLAHE to TIFF images, writing '*_corrected.tif' beside each "
-            "source."
+            "one optional contrast method to TIFF images, writing "
+            "'*_corrected.tif' beside each source."
         ),
         epilog=(
             "Examples:\n"
@@ -424,6 +638,9 @@ def parse_args() -> argparse.Namespace:
             "    python tiff_background_correct.py --no-gaussian\n"
             "  Disable CLAHE:\n"
             "    python tiff_background_correct.py --no-clahe\n"
+            "  Apply percentile stretching instead of CLAHE:\n"
+            "    python tiff_background_correct.py --no-clahe "
+            "--percentile-stretch --percentile-lower 1 --percentile-upper 99.8\n"
             "  Process a dataset tree:\n"
             "    python tiff_background_correct.py --dataset dmd --dry-run\n"
             "\n"
@@ -488,6 +705,38 @@ def parse_args() -> argparse.Namespace:
         help="CLAHE tile-grid override as two positive integers.",
     )
     parser.add_argument(
+        "--minmax-stretch",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable exact per-image min-max stretching.",
+    )
+    parser.add_argument(
+        "--percentile-stretch",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable percentile-based stretching.",
+    )
+    parser.add_argument(
+        "--percentile-lower",
+        type=float,
+        default=None,
+        help="Lower percentile override for percentile stretching.",
+    )
+    parser.add_argument(
+        "--percentile-upper",
+        type=float,
+        default=None,
+        help="Upper percentile override for percentile stretching.",
+    )
+    parser.add_argument(
+        "--stretch-output-range",
+        type=float,
+        nargs=2,
+        metavar=("MIN", "MAX"),
+        default=None,
+        help="Output range override for min-max or percentile stretching.",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=None,
@@ -543,6 +792,11 @@ def main() -> None:
                 config.clahe_enabled,
                 config.clahe_clip_limit,
                 config.clahe_tile_grid_size,
+                config.minmax_stretch_enabled,
+                config.percentile_stretch_enabled,
+                config.percentile_lower,
+                config.percentile_upper,
+                config.stretch_output_range,
             ): path
             for path in tiff_files
         }

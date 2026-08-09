@@ -10,15 +10,25 @@ paths:
 # Image-processing settings.
 processing:
   # Whether to apply Gaussian flat-field background correction.
-  gaussian_enabled: false
+  gaussian_enabled: true
   # Gaussian sigma used to estimate the slowly varying illumination background.
-  sigma: 400
+  sigma: 1000
   # Whether to apply CLAHE after flat-field background correction.
   clahe_enabled: false
   # CLAHE contrast clip limit; larger values produce stronger local contrast.
   clahe_clip_limit: 2.0
   # CLAHE tile grid as [columns, rows]; both values must be positive integers.
   clahe_tile_grid_size: [8, 8]
+  # Whether to linearly stretch each image's exact minimum and maximum.
+  minmax_stretch_enabled: false
+  # Whether to stretch intensities between configurable percentile bounds.
+  percentile_stretch_enabled: true
+  # Lower percentile mapped to the first value in stretch_output_range.
+  percentile_lower: 1.0
+  # Upper percentile mapped to the second value in stretch_output_range.
+  percentile_upper: 99.0
+  # Output intensity interval used by min-max and percentile stretching.
+  stretch_output_range: [0, 255]
 
 # Execution settings.
 runtime:
