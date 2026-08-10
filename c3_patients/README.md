@@ -36,25 +36,29 @@ CSVs but lacking image folders are reported and do not create output rows.
 
 ## 2. Correct image background
 
+Background correction is configured in `tiff_background_correct.yaml`. Its
+default input root points to this patient dataset. Gaussian flat-field
+correction and contrast enhancement can be enabled independently in the YAML,
+and every setting can be overridden from the command line.
+
 First inspect the planned work:
 
 ```bash
-python tiff_background_correct.py \
-  --input-root /workspaces/mito-counter/data/Calpaine_3_patients/Processed \
-  --dry-run
+python tiff_background_correct.py --dry-run
 ```
 
 Then run correction:
 
 ```bash
-python tiff_background_correct.py \
-  --input-root /workspaces/mito-counter/data/Calpaine_3_patients/Processed
+python tiff_background_correct.py
 ```
 
 Each source TIFF receives a sibling file named `*_corrected.tif`.
-Corrected TIFFs preserve the source image dtype and bit depth without an
-additional contrast stretch. Values are clipped only when needed to fit the
-source dtype after flat-field correction.
+Corrected TIFFs preserve the source image dtype and bit depth. After optional
+Gaussian correction, select at most one contrast method: CLAHE, exact min-max
+stretching, or percentile stretching. Percentile bounds and the stretching
+output range (default `0–255`) are configurable in the YAML. Values outside
+the percentile bounds are clipped to the output endpoints.
 
 ## 3. Segment mitochondria
 
@@ -70,6 +74,32 @@ For a one-image smoke test, temporarily set `paths.input_file` in
 `c3_patients/mitonet_infenence.yaml` to one corrected TIFF path. Set it back to
 `null` before the full run. Each corrected image should receive
 `*_segmented.tif` and `*_segmented_metrics.csv`.
+
+### Multi-scale segmentation
+
+`paths.downsample_factor` accepts either one number or a list. A list runs one
+inference pass per factor and fuses the passes into a single instance
+segmentation, because no single factor segments every mitochondrion size well:
+factor 1 resolves the smallest mitochondria, factor 4 keeps the largest ones
+whole, and factor 2 is the best single-pass compromise. The patient config uses
+`[1.0, 2.0, 4.0]`. Runtime and GPU memory scale with the number of factors.
+
+Instances from different passes are treated as the same object when their IoU
+reaches `fusion.iou_threshold`, or when `fusion.containment_threshold` of the
+smaller instance lies inside the larger one. The containment rule absorbs the
+fragments a fine scale produces for one large mitochondrion. Each fused object
+is then represented by the finest scale that segmented it as a single instance
+covering at least `fusion.min_coverage_ratio` of its largest extent across
+scales, so small mitochondria keep the sharp factor-1 boundary while large ones
+fall back to factor 2 or 4 instead of staying fragmented.
+
+`fusion.min_votes` controls how many scales must detect an object for it to be
+kept. `1` keeps the full union of all passes. Prefer `2` unless the union has
+been checked in overlay QC: on low-contrast fields where the finer scales
+correctly find nothing, factor 4 can outline whole myofibril blocks as
+mitochondria, and a union imports every one of those false positives. Because
+counts, nearest-neighbor distances, and Voronoi areas all depend on this
+setting, use one value for the entire dataset and record which one.
 
 ## 4. Generate segmentation overlays
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import csv
-from typing import Optional
+from typing import Optional, Sequence
 
 import cv2
 import numpy as np
@@ -12,12 +12,21 @@ import torch
 import yaml
 from empanada.config_loaders import load_config
 from empanada.inference.engines import PanopticDeepLabEngine
+from scipy.ndimage import find_objects
 from scipy.spatial import QhullError, Voronoi
 
 import tifffile as tiff
 
 # === User-editable config file ===
 INFERENCE_CONFIG = Path("/workspaces/mito-counter/mitonet_infenence.yaml")
+
+# Defaults applied when a config omits the optional `fusion` block.
+DEFAULT_FUSION_PARAMS = {
+    "iou_threshold": 0.4,
+    "containment_threshold": 0.75,
+    "min_coverage_ratio": 0.7,
+    "min_votes": 1,
+}
 
 
 def resize_array(image: np.ndarray, factor: float, is_mask: bool) -> np.ndarray:
@@ -598,6 +607,312 @@ def write_metrics_csv(path: Path, metrics: list[dict]) -> None:
             )
 
 
+def resolve_downsample_factors(value) -> list[float]:
+    """Normalize the configured downsample factor into an ordered scale list.
+
+    Args:
+        value: Either a single numeric downsample factor or a sequence of factors.
+
+    Returns:
+        list[float]: Unique factors sorted from finest (smallest) to coarsest.
+    """
+    if isinstance(value, (list, tuple)):
+        factors = [float(item) for item in value]
+    else:
+        factors = [float(value)]
+    if not factors:
+        raise ValueError("downsample_factor must not be empty.")
+    for factor in factors:
+        if factor < 1.0:
+            raise ValueError("downsample_factor values must be >= 1.0.")
+    return sorted(set(factors))
+
+
+def resolve_fusion_params(inference_cfg: dict) -> dict:
+    """Merge the optional `fusion` config block over the built-in defaults.
+
+    Args:
+        inference_cfg (dict): Parsed inference YAML contents.
+
+    Returns:
+        dict: Fusion parameters with every expected key populated.
+    """
+    params = dict(DEFAULT_FUSION_PARAMS)
+    user_params = inference_cfg.get("fusion") or {}
+    unknown_keys = set(user_params) - set(DEFAULT_FUSION_PARAMS)
+    if unknown_keys:
+        raise ValueError(f"Unknown fusion parameters: {sorted(unknown_keys)}")
+    params.update(user_params)
+    params["iou_threshold"] = float(params["iou_threshold"])
+    params["containment_threshold"] = float(params["containment_threshold"])
+    params["min_coverage_ratio"] = float(params["min_coverage_ratio"])
+    params["min_votes"] = int(params["min_votes"])
+    return params
+
+
+def segment_at_scale(
+    image: np.ndarray,
+    engine: PanopticDeepLabEngine,
+    *,
+    downsample_factor: float,
+    in_channels: int,
+    mean: float,
+    std: float,
+    device: str,
+) -> np.ndarray:
+    """Segment one image at a single downsample factor, restored to full resolution.
+
+    Args:
+        image (np.ndarray): Full-resolution source image.
+        engine (PanopticDeepLabEngine): Initialized panoptic inference engine.
+        downsample_factor (float): Factor applied before inference.
+        in_channels (int): Channel count expected by the model.
+        mean (float): Normalization mean.
+        std (float): Normalization standard deviation.
+        device (str): Torch device used for inference.
+
+    Returns:
+        np.ndarray: Instance label map at the original image resolution.
+    """
+    orig_h, orig_w = image.shape[:2]
+    scaled_image = resize_array(image, downsample_factor, is_mask=False)
+
+    input_tensor = to_model_input(scaled_image, in_channels, mean, std).to(device)
+    with torch.no_grad():
+        pan_pred = engine(input_tensor)
+
+    labels = pan_pred.squeeze().detach().cpu().numpy().astype(np.int32)
+    if labels.shape[:2] != (orig_h, orig_w):
+        labels = cv2.resize(labels, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+    return labels.astype(np.uint32)
+
+
+def compute_label_areas(labels: np.ndarray) -> np.ndarray:
+    """Count pixels per label ID, including background at index 0.
+
+    Args:
+        labels (np.ndarray): Integer label map where 0 is background.
+
+    Returns:
+        np.ndarray: Pixel counts indexed by label ID.
+    """
+    return np.bincount(labels.ravel().astype(np.int64))
+
+
+def compute_overlap_counts(labels_a: np.ndarray, labels_b: np.ndarray) -> np.ndarray:
+    """Count overlapping pixels for every co-occurring instance pair.
+
+    Args:
+        labels_a (np.ndarray): First instance label map.
+        labels_b (np.ndarray): Second instance label map with identical shape.
+
+    Returns:
+        np.ndarray: Array of shape ``(n_pairs, 3)`` holding label A, label B, and
+        their shared pixel count.
+    """
+    overlap_mask = (labels_a > 0) & (labels_b > 0)
+    if not np.any(overlap_mask):
+        return np.empty((0, 3), dtype=np.int64)
+
+    values_a = labels_a[overlap_mask].astype(np.int64)
+    values_b = labels_b[overlap_mask].astype(np.int64)
+    stride = int(values_b.max()) + 1
+    keys, counts = np.unique(values_a * stride + values_b, return_counts=True)
+    return np.stack([keys // stride, keys % stride, counts], axis=1)
+
+
+def find_group_root(parents: dict, node: tuple[int, int]) -> tuple[int, int]:
+    """Resolve the union-find root of a node with path compression.
+
+    Args:
+        parents (dict): Mapping from node to its current parent node.
+        node (tuple[int, int]): Node identified by scale index and label ID.
+
+    Returns:
+        tuple[int, int]: Root node of the set containing ``node``.
+    """
+    root = node
+    while parents[root] != root:
+        root = parents[root]
+    while parents[node] != root:
+        parents[node], node = root, parents[node]
+    return root
+
+
+def group_instances_across_scales(
+    label_maps: list[np.ndarray],
+    areas_by_scale: list[np.ndarray],
+    *,
+    iou_threshold: float,
+    containment_threshold: float,
+) -> list[list[tuple[int, int]]]:
+    """Group instances from every scale that describe the same object.
+
+    Instances from different scales are linked when they overlap strongly, either
+    by intersection-over-union or because one is largely contained in the other.
+    Containment links absorb the fragments a finer scale produces for a single
+    large object. Linked instances are merged transitively, so every group is one
+    fused object and instances detected by only one scale form their own group,
+    which keeps the result a union over all scales.
+
+    Args:
+        label_maps (list[np.ndarray]): Full-resolution label map per scale.
+        areas_by_scale (list[np.ndarray]): Per-scale pixel counts indexed by label ID.
+        iou_threshold (float): Minimum intersection-over-union that links two instances.
+        containment_threshold (float): Minimum fraction of the smaller instance that
+            must fall inside the larger one to link them.
+
+    Returns:
+        list[list[tuple[int, int]]]: Groups of ``(scale_index, label_id)`` members.
+    """
+    parents: dict[tuple[int, int], tuple[int, int]] = {}
+    for scale_index, areas in enumerate(areas_by_scale):
+        for label_id in np.nonzero(areas)[0]:
+            if label_id == 0:
+                continue
+            node = (scale_index, int(label_id))
+            parents[node] = node
+
+    for index_a in range(len(label_maps)):
+        for index_b in range(index_a + 1, len(label_maps)):
+            pairs = compute_overlap_counts(label_maps[index_a], label_maps[index_b])
+            for label_a, label_b, intersection in pairs:
+                area_a = float(areas_by_scale[index_a][label_a])
+                area_b = float(areas_by_scale[index_b][label_b])
+                union = area_a + area_b - float(intersection)
+                iou = (float(intersection) / union) if union > 0 else 0.0
+                smaller_area = min(area_a, area_b)
+                containment = (
+                    float(intersection) / smaller_area if smaller_area > 0 else 0.0
+                )
+                if iou < iou_threshold and containment < containment_threshold:
+                    continue
+                root_a = find_group_root(parents, (index_a, int(label_a)))
+                root_b = find_group_root(parents, (index_b, int(label_b)))
+                if root_a != root_b:
+                    parents[root_b] = root_a
+
+    groups: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for node in parents:
+        groups.setdefault(find_group_root(parents, node), []).append(node)
+    return list(groups.values())
+
+
+def select_group_representative(
+    group: Sequence[tuple[int, int]],
+    areas_by_scale: list[np.ndarray],
+    *,
+    min_coverage_ratio: float,
+) -> tuple[int, int]:
+    """Pick the scale that best represents one fused object.
+
+    The finest scale is preferred, because it resolves boundaries most sharply,
+    but only when it segmented the object as a single instance covering enough of
+    the object's largest extent across scales. A scale that fragmented the object
+    contributes several members and is skipped, which is what pushes large objects
+    onto coarser scales. When no scale qualifies, the single instance with the
+    largest area wins.
+
+    Args:
+        group (Sequence[tuple[int, int]]): ``(scale_index, label_id)`` members of one object.
+        areas_by_scale (list[np.ndarray]): Per-scale pixel counts indexed by label ID.
+        min_coverage_ratio (float): Minimum area fraction, relative to the best-covering
+            scale, that a scale must reach to be accepted.
+
+    Returns:
+        tuple[int, int]: The ``(scale_index, label_id)`` chosen to represent the object.
+    """
+    members_by_scale: dict[int, list[int]] = {}
+    for scale_index, label_id in group:
+        members_by_scale.setdefault(scale_index, []).append(label_id)
+
+    coverage_by_scale = {
+        scale_index: sum(float(areas_by_scale[scale_index][label]) for label in labels)
+        for scale_index, labels in members_by_scale.items()
+    }
+    best_coverage = max(coverage_by_scale.values())
+
+    for scale_index in sorted(members_by_scale):
+        labels = members_by_scale[scale_index]
+        if len(labels) != 1:
+            continue
+        if coverage_by_scale[scale_index] < min_coverage_ratio * best_coverage:
+            continue
+        return (scale_index, labels[0])
+
+    return max(group, key=lambda node: float(areas_by_scale[node[0]][node[1]]))
+
+
+def fuse_label_maps(
+    label_maps: list[np.ndarray],
+    *,
+    iou_threshold: float,
+    containment_threshold: float,
+    min_coverage_ratio: float,
+    min_votes: int,
+) -> np.ndarray:
+    """Fuse per-scale label maps into a single instance segmentation.
+
+    Args:
+        label_maps (list[np.ndarray]): Full-resolution label map per scale, ordered
+            from finest to coarsest.
+        iou_threshold (float): Minimum intersection-over-union that links two instances.
+        containment_threshold (float): Minimum containment fraction that links two instances.
+        min_coverage_ratio (float): Minimum relative coverage for a scale to represent
+            a fused object.
+        min_votes (int): Minimum number of scales that must detect an object for it to
+            be kept. A value of 1 keeps the full union.
+
+    Returns:
+        np.ndarray: Fused instance label map relabeled from 1 to N.
+    """
+    if len(label_maps) == 1:
+        return label_maps[0]
+
+    areas_by_scale = [compute_label_areas(labels) for labels in label_maps]
+    slices_by_scale = [find_objects(labels.astype(np.int32)) for labels in label_maps]
+
+    groups = group_instances_across_scales(
+        label_maps,
+        areas_by_scale,
+        iou_threshold=iou_threshold,
+        containment_threshold=containment_threshold,
+    )
+
+    selected: list[tuple[int, int]] = []
+    for group in groups:
+        if len({scale_index for scale_index, _ in group}) < min_votes:
+            continue
+        selected.append(
+            select_group_representative(
+                group, areas_by_scale, min_coverage_ratio=min_coverage_ratio
+            )
+        )
+
+    # Paint the largest objects first so smaller neighbors keep contested pixels
+    # instead of being swallowed by an overlapping coarse-scale instance.
+    selected.sort(
+        key=lambda node: float(areas_by_scale[node[0]][node[1]]), reverse=True
+    )
+
+    fused = np.zeros(label_maps[0].shape[:2], dtype=np.uint32)
+    for next_label, (scale_index, label_id) in enumerate(selected, start=1):
+        bounds = slices_by_scale[scale_index][label_id - 1]
+        if bounds is None:
+            continue
+        window = label_maps[scale_index][bounds]
+        fused[bounds][window == label_id] = next_label
+
+    # Objects fully overwritten during painting leave gaps, so relabel densely.
+    remaining = np.unique(fused)
+    remaining = remaining[remaining > 0]
+    if remaining.size == 0:
+        return fused
+    lookup = np.zeros(int(fused.max()) + 1, dtype=np.uint32)
+    lookup[remaining] = np.arange(1, remaining.size + 1, dtype=np.uint32)
+    return lookup[fused]
+
+
 def resolve_inference_images(input_dir: Path, input_file: Optional[str]) -> list[Path]:
     """Resolve image paths for inference from config settings.
 
@@ -669,16 +984,15 @@ def main(config_path: Path = INFERENCE_CONFIG) -> None:
     input_file = paths_cfg.get("input_file")
     model_pth = Path(paths_cfg["model_pth"])
     config_yaml = Path(paths_cfg["config_yaml"])
-    downsample_factor = float(paths_cfg["downsample_factor"])
+    downsample_factors = resolve_downsample_factors(paths_cfg["downsample_factor"])
     device = str(paths_cfg["device"])
     engine_params = inference_cfg["engine_params"]
+    fusion_params = resolve_fusion_params(inference_cfg)
 
     if device != "cuda":
         raise ValueError("device must be set to 'cuda' to run on GPU.")
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available. Please run on a GPU-enabled setup.")
-    if downsample_factor < 1.0:
-        raise ValueError("downsample_factor must be >= 1.0.")
 
     # Load model config and TorchScript model.
     cfg = load_config(str(config_yaml))
@@ -714,32 +1028,31 @@ def main(config_path: Path = INFERENCE_CONFIG) -> None:
         )
 
     total = len(image_paths)
+    scales_text = ", ".join(f"{factor:g}" for factor in downsample_factors)
+    print(f"Running inference at downsample factor(s): {scales_text}")
 
     for idx, image_path in enumerate(image_paths, start=1):
         output_path = build_output_path(image_path)
 
         print(f"Processing image {idx}/{total}: {image_path.name}")
 
-        # Read and downsample the image for faster inference.
         image = tiff.imread(str(image_path))
 
-        orig_h, orig_w = image.shape[:2]
-        image = resize_array(image, downsample_factor, is_mask=False)
-
-        # Convert to model tensor and run inference.
-        input_tensor = to_model_input(image, in_channels, mean, std).to(device)
-        with torch.no_grad():
-            pan_pred = engine(input_tensor)
-
-        # Upsample predictions and compute per-instance metrics.
-        pan_np = pan_pred.squeeze().detach().cpu().numpy().astype(np.int32)
-        if downsample_factor != 1.0:
-            pan_np = cv2.resize(
-                pan_np,
-                (orig_w, orig_h),
-                interpolation=cv2.INTER_NEAREST,
+        # Segment at every configured scale, then fuse into one instance map.
+        label_maps = [
+            segment_at_scale(
+                image,
+                engine,
+                downsample_factor=factor,
+                in_channels=in_channels,
+                mean=mean,
+                std=std,
+                device=device,
             )
-        pan_np = pan_np.astype(np.uint32)
+            for factor in downsample_factors
+        ]
+        pan_np = fuse_label_maps(label_maps, **fusion_params)
+
         metrics = compute_instance_metrics(pan_np)
         metrics_path = output_path.with_name(f"{output_path.stem}_metrics.csv")
         write_metrics_csv(metrics_path, metrics)

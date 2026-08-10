@@ -6,8 +6,26 @@ paths:
   input_file: null
   model_pth: /workspaces/mito-counter/models/MitoNet_v1.pth
   config_yaml: /workspaces/mito-counter/models/MitoNet_v1.yaml
-  downsample_factor: 4.0
+  # A single number runs one pass. A list runs one pass per factor and fuses the
+  # instances into one segmentation, so small mitochondria come from the finest
+  # scale and large ones from the coarsest.
+  downsample_factor: [1.0, 2.0]
   device: cuda
+
+# Multi-scale fusion settings. Ignored when downsample_factor is a single number.
+fusion:
+  # Instances from different scales are treated as the same object when their
+  # IoU reaches this value.
+  iou_threshold: 0.1
+  # ...or when this fraction of the smaller instance lies inside the larger one,
+  # which absorbs the fragments a fine scale produces for one large object.
+  containment_threshold: 0.3
+  # A scale represents an object only if its single instance covers at least this
+  # fraction of the object's largest extent across scales.
+  min_coverage_ratio: 0.7
+  # Scales that must detect an object to keep it. 1 keeps the full union;
+  # raise to 2 to drop objects seen at only one scale.
+  min_votes: 1
 
 engine_params:
   thing_list:
@@ -15,6 +33,6 @@ engine_params:
   label_divisor: 0
   stuff_area: 64
   void_label: 0
-  nms_threshold: 0.1
+  nms_threshold: 0.05
   nms_kernel: 7
-  confidence_thr: 0.5
+  confidence_thr: 0.50
