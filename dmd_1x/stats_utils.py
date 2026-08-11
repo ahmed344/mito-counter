@@ -33,6 +33,12 @@ MUSCLE_LABEL_ALIASES = {
     "tibialis anterior": "TA",
     "ta": "TA",
 }
+GENOTYPE_MUSCLE_COLOR_STOPS: dict[tuple[str, str], list[str]] = {
+    ("WT", "EOM"): ["#041B4D", "#08519C", "#2171B5", "#6BAED6", "#C6DBEF"],
+    ("WT", "TA"): ["#5C3A00", "#B36B00", "#E08A00", "#F0B429", "#FFE08A"],
+    ("DMD", "EOM"): ["#00441B", "#006D2C", "#238B45", "#74C476", "#C7E9C0"],
+    ("DMD", "TA"): ["#4A0050", "#7A0177", "#AE017E", "#DD3497", "#FCC5C0"],
+}
 
 
 def build_output_path(
@@ -286,52 +292,129 @@ def get_category_orders(
     return x_order, hue_order, block_order
 
 
+def primary_category_token(label: str) -> str:
+    """Extract the primary token from a raw or combined category label.
+
+    Args:
+        label (str): Raw label, optionally compartment-combined as ``TOKEN | SS``.
+
+    Returns:
+        str: Left-side token before ``|``, stripped of whitespace.
+    """
+
+    normalized = str(label).strip()
+    if "|" in normalized:
+        return normalized.split("|", maxsplit=1)[0].strip()
+    return normalized
+
+
+def parse_genotype_short(label: str) -> str | None:
+    """Parse a genotype short code from a category label.
+
+    Args:
+        label (str): Raw genotype, muscle, or combined plot label.
+
+    Returns:
+        str | None: ``WT`` or ``DMD`` when recognized, otherwise ``None``.
+    """
+
+    token = primary_category_token(label=label)
+    lower_value = token.lower()
+    if "wildtype" in lower_value or lower_value == "wt" or lower_value.endswith("_wt"):
+        return "WT"
+    if "dystrophy" in lower_value or lower_value == "dmd" or lower_value.endswith("_dmd"):
+        return "DMD"
+    return None
+
+
+def parse_muscle_short(label: str) -> str | None:
+    """Parse a muscle short code from a category label.
+
+    Args:
+        label (str): Raw genotype, muscle, or combined plot label.
+
+    Returns:
+        str | None: ``EOM`` or ``TA`` when recognized, otherwise ``None``.
+    """
+
+    token = primary_category_token(label=label)
+    return normalize_muscle_condition_label(condition_value=token)
+
+
+def resolve_genotype_muscle(x_value: str, hue_value: str) -> tuple[str, str] | None:
+    """Resolve genotype and muscle short codes from an x/hue label pair.
+
+    Args:
+        x_value (str): X-axis category label.
+        hue_value (str): Hue category label.
+
+    Returns:
+        tuple[str, str] | None: ``(genotype, muscle)`` short codes when both can be
+        inferred from the pair, otherwise ``None``.
+    """
+
+    genotype = parse_genotype_short(label=x_value) or parse_genotype_short(label=hue_value)
+    muscle = parse_muscle_short(label=x_value) or parse_muscle_short(label=hue_value)
+    if genotype is None or muscle is None:
+        return None
+    return genotype, muscle
+
+
+def blend_block_palette(color_stops: list[str], n_colors: int) -> list[tuple[float, float, float]]:
+    """Build a dark-to-light RGB palette for replicate blocks.
+
+    Args:
+        color_stops (list[str]): Hex color stops for blending.
+        n_colors (int): Number of block colors to generate.
+
+    Returns:
+        list[tuple[float, float, float]]: RGB colors of length ``n_colors``.
+    """
+
+    return list(sns.blend_palette(color_stops, n_colors=n_colors))
+
+
 def create_condition_block_palette(
     block_order: list[str],
+    x_order: list[str],
     hue_order: list[str],
-) -> dict[tuple[str, str], tuple[float, float, float]]:
-    """Create colors keyed by both condition and block number.
+) -> dict[tuple[str, str, str], tuple[float, float, float]]:
+    """Create colors keyed by genotype×muscle group and block number.
 
     Args:
         block_order (list[str]): Ordered block labels.
-        hue_order (list[str]): Ordered condition labels.
+        x_order (list[str]): Ordered x-axis category labels.
+        hue_order (list[str]): Ordered hue category labels.
 
     Returns:
-        dict[tuple[str, str], tuple[float, float, float]]: Mapping from ``(hue, block)``
-        to RGB color, with WT-like hues using blue shades and DMD/KO-like hues using
-        orange shades.
+        dict[tuple[str, str, str], tuple[float, float, float]]: Mapping from
+        ``(x, hue, block)`` to RGB color. Known genotype×muscle pairs use distinct
+        families (WT EOM blue, WT TA orange, DMD EOM green, DMD TA red); unresolved
+        pairs fall back to greys.
     """
 
-    if not block_order or not hue_order:
+    if not block_order or not x_order or not hue_order:
         return {}
 
-    condition_palette_map: dict[str, list[tuple[float, float, float]]] = {}
-    for hue_value in hue_order:
-        condition_key = format_condition_legend_label(hue_value)
-        if condition_key in {"WT", "EOM"}:
-            condition_palette_map[hue_value] = list(
-                sns.blend_palette(
-                    ["#041B4D", "#08519C", "#2171B5", "#6BAED6", "#C6DBEF"],
-                    n_colors=len(block_order),
-                )
-            )
-        elif condition_key in {"DMD", "KO", "TA"}:
-            condition_palette_map[hue_value] = list(
-                sns.blend_palette(
-                    ["#5A1A02", "#A63603", "#D94801", "#F16913", "#FDBE85"],
-                    n_colors=len(block_order),
-                )
-            )
-        else:
-            condition_palette_map[hue_value] = list(
-                sns.color_palette("Greys", len(block_order) + 2)[2:]
-            )
-
-    return {
-        (str(hue_value), str(block_label)): condition_palette_map[hue_value][block_index]
-        for hue_value in hue_order
-        for block_index, block_label in enumerate(block_order)
-    }
+    grey_palette = list(sns.color_palette("Greys", len(block_order) + 2)[2:])
+    group_palette_cache: dict[tuple[str, str] | None, list[tuple[float, float, float]]] = {}
+    palette: dict[tuple[str, str, str], tuple[float, float, float]] = {}
+    for x_value in x_order:
+        for hue_value in hue_order:
+            group_key = resolve_genotype_muscle(x_value=str(x_value), hue_value=str(hue_value))
+            if group_key not in group_palette_cache:
+                color_stops = GENOTYPE_MUSCLE_COLOR_STOPS.get(group_key) if group_key is not None else None
+                if color_stops is None:
+                    group_palette_cache[group_key] = grey_palette
+                else:
+                    group_palette_cache[group_key] = blend_block_palette(
+                        color_stops=color_stops,
+                        n_colors=len(block_order),
+                    )
+            block_colors = group_palette_cache[group_key]
+            for block_index, block_label in enumerate(block_order):
+                palette[(str(x_value), str(hue_value), str(block_label))] = block_colors[block_index]
+    return palette
 
 
 def format_condition_legend_label(condition_value: str) -> str:
@@ -384,32 +467,45 @@ def format_condition_display_label(condition_value: str) -> str:
 
 def build_block_legend_labels(
     plot_data: pd.DataFrame,
+    x: str,
     block: str,
     hue: str,
+    x_order: list[str],
+    hue_order: list[str],
     block_order: list[str],
-) -> dict[tuple[str, str], str]:
+) -> dict[tuple[str, str, str], str]:
     """Create readable legend labels for colored replicate blocks.
 
     Args:
-        plot_data (pd.DataFrame): Plot dataframe containing block and hue columns.
+        plot_data (pd.DataFrame): Plot dataframe containing x, block, and hue columns.
+        x (str): X-axis grouping column name.
         block (str): Block column name.
         hue (str): Hue column name.
+        x_order (list[str]): Ordered x-axis category labels.
+        hue_order (list[str]): Ordered hue category labels.
         block_order (list[str]): Ordered block labels.
 
     Returns:
-        dict[tuple[str, str], str]: Mapping from ``(hue, block)`` to legend text.
+        dict[tuple[str, str, str], str]: Mapping from ``(x, hue, block)`` to legend text.
     """
 
-    labels: dict[tuple[str, str], str] = {}
-    for block_label in block_order:
-        rows = plot_data.loc[plot_data[block].astype(str) == block_label].copy()
-        if rows.empty:
-            continue
-        present_hues = sorted(rows[hue].astype(str).unique().tolist(), key=lambda value: value)
-        for hue_value in present_hues:
-            labels[(str(hue_value), str(block_label))] = (
-                f"{format_condition_legend_label(hue_value)} {block_label}"
-            )
+    labels: dict[tuple[str, str, str], str] = {}
+    for x_value in x_order:
+        for hue_value in hue_order:
+            for block_label in block_order:
+                rows = plot_data.loc[
+                    (plot_data[x].astype(str) == str(x_value))
+                    & (plot_data[hue].astype(str) == str(hue_value))
+                    & (plot_data[block].astype(str) == str(block_label))
+                ]
+                if rows.empty:
+                    continue
+                group_key = resolve_genotype_muscle(x_value=str(x_value), hue_value=str(hue_value))
+                if group_key is None:
+                    group_text = format_condition_legend_label(hue_value)
+                else:
+                    group_text = f"{group_key[0]} {group_key[1]}"
+                labels[(str(x_value), str(hue_value), str(block_label))] = f"{group_text} {block_label}"
     return labels
 
 
@@ -582,9 +678,10 @@ def add_superplot_summary(
     group_data: pd.DataFrame,
     y: str,
     block: str,
+    x_value: str,
     hue_value: str,
     center: float,
-    condition_block_palette: dict[tuple[str, str], tuple[float, float, float]],
+    condition_block_palette: dict[tuple[str, str, str], tuple[float, float, float]],
 ) -> None:
     """Overlay per-block means and overall mean +/- SEM markers.
 
@@ -593,10 +690,11 @@ def add_superplot_summary(
         group_data (pd.DataFrame): Group rows for a single x/hue pair.
         y (str): Numeric metric column.
         block (str): Replicate block column.
-        hue_value (str): Condition label for the current group.
+        x_value (str): X-axis category label for the current group.
+        hue_value (str): Hue label for the current group.
         center (float): X-axis center of the group.
-        condition_block_palette (dict[tuple[str, str], tuple[float, float, float]]):
-            Colors keyed by ``(hue, block)``.
+        condition_block_palette (dict[tuple[str, str, str], tuple[float, float, float]]):
+            Colors keyed by ``(x, hue, block)``.
 
     Returns:
         None: This function draws artists on ``ax``.
@@ -605,7 +703,10 @@ def add_superplot_summary(
     block_means: list[float] = []
     available_blocks = sorted(
         group_data[block].astype(str).unique(),
-        key=lambda value: ((str(hue_value), value) not in condition_block_palette, value),
+        key=lambda value: (
+            (str(x_value), str(hue_value), value) not in condition_block_palette,
+            value,
+        ),
     )
     offsets = [0.0] if len(available_blocks) == 1 else np.linspace(-0.09, 0.09, len(available_blocks))
     for block_label, offset in zip(available_blocks, offsets):
@@ -619,7 +720,10 @@ def add_superplot_summary(
             block_mean,
             s=30,
             marker="D",
-            color=condition_block_palette.get((str(hue_value), str(block_label)), "0.4"),
+            color=condition_block_palette.get(
+                (str(x_value), str(hue_value), str(block_label)),
+                "0.4",
+            ),
             edgecolor="black",
             linewidth=0.5,
             zorder=6,
@@ -935,16 +1039,16 @@ def style_superplot_axis(
 
 def add_block_legend(
     ax: plt.Axes,
-    condition_block_palette: dict[tuple[str, str], tuple[float, float, float]],
-    block_legend_labels: dict[tuple[str, str], str],
+    condition_block_palette: dict[tuple[str, str, str], tuple[float, float, float]],
+    block_legend_labels: dict[tuple[str, str, str], str],
 ) -> None:
     """Draw a block-color legend on one axis.
 
     Args:
         ax (plt.Axes): Axis where legend will be drawn.
-        condition_block_palette (dict[tuple[str, str], tuple[float, float, float]]):
-            ``(hue, block)`` color mapping.
-        block_legend_labels (dict[tuple[str, str], str]): ``(hue, block)`` label mapping.
+        condition_block_palette (dict[tuple[str, str, str], tuple[float, float, float]]):
+            ``(x, hue, block)`` color mapping.
+        block_legend_labels (dict[tuple[str, str, str], str]): ``(x, hue, block)`` label mapping.
 
     Returns:
         None: This function adds legend artists to ``ax``.
@@ -962,10 +1066,16 @@ def add_block_legend(
             markeredgecolor="black",
             markeredgewidth=0.4,
             markersize=6,
-            label=block_legend_labels.get((hue_value, block_label), f"{hue_value} {block_label}"),
+            label=block_legend_labels.get(
+                (x_value, hue_value, block_label),
+                f"{x_value} {hue_value} {block_label}",
+            ),
         )
-        for (hue_value, block_label), color in condition_block_palette.items()
+        for (x_value, hue_value, block_label), color in condition_block_palette.items()
+        if (x_value, hue_value, block_label) in block_legend_labels
     ]
+    if not handles:
+        return
     ax.legend(handles=handles, frameon=True, fontsize=8, title="Block", title_fontsize=9, loc="upper right")
 
 
@@ -1021,9 +1131,18 @@ def render_super_violin_on_ax(
     annotation_records = normalize_superplot_annotations(superplot_annotations)
     condition_block_palette = create_condition_block_palette(
         block_order=block_order,
+        x_order=x_order,
         hue_order=hue_order,
     )
-    block_legend_labels = build_block_legend_labels(plot_data=plot_data, block=block, hue=hue, block_order=block_order)
+    block_legend_labels = build_block_legend_labels(
+        plot_data=plot_data,
+        x=x,
+        block=block,
+        hue=hue,
+        x_order=x_order,
+        hue_order=hue_order,
+        block_order=block_order,
+    )
     group_centers = get_group_centers(x_order=x_order, hue_order=hue_order)
     tick_positions: list[float] = []
     tick_labels: list[str] = []
@@ -1088,7 +1207,7 @@ def render_super_violin_on_ax(
                 y_grid,
                 current_left,
                 stripe_right,
-                color=condition_block_palette[(str(hue_value), str(block_label))],
+                color=condition_block_palette[(str(x_value), str(hue_value), str(block_label))],
                 alpha=0.85,
                 linewidth=0,
                 zorder=2,
@@ -1103,6 +1222,7 @@ def render_super_violin_on_ax(
             group_data=group_data,
             y=y,
             block=block,
+            x_value=x_value,
             hue_value=hue_value,
             center=center,
             condition_block_palette=condition_block_palette,
@@ -1186,9 +1306,18 @@ def render_super_beeswarm_on_ax(
     annotation_records = normalize_superplot_annotations(superplot_annotations)
     condition_block_palette = create_condition_block_palette(
         block_order=block_order,
+        x_order=x_order,
         hue_order=hue_order,
     )
-    block_legend_labels = build_block_legend_labels(plot_data=plot_data, block=block, hue=hue, block_order=block_order)
+    block_legend_labels = build_block_legend_labels(
+        plot_data=plot_data,
+        x=x,
+        block=block,
+        hue=hue,
+        x_order=x_order,
+        hue_order=hue_order,
+        block_order=block_order,
+    )
     group_centers = get_group_centers(x_order=x_order, hue_order=hue_order)
     tick_positions: list[float] = []
     tick_labels: list[str] = []
@@ -1247,7 +1376,7 @@ def render_super_beeswarm_on_ax(
                 point_x[block_mask.to_numpy()],
                 group_data.loc[block_mask, y].to_numpy(dtype=float),
                 s=point_size,
-                color=condition_block_palette[(str(hue_value), str(block_label))],
+                color=condition_block_palette[(str(x_value), str(hue_value), str(block_label))],
                 edgecolor="white",
                 linewidth=0.2,
                 alpha=SUPERPLOT_POINT_ALPHA,
@@ -1258,6 +1387,7 @@ def render_super_beeswarm_on_ax(
             group_data=group_data,
             y=y,
             block=block,
+            x_value=x_value,
             hue_value=hue_value,
             center=center,
             condition_block_palette=condition_block_palette,
