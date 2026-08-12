@@ -1,0 +1,175 @@
+# CAPN3 patient instance-level hierarchical Bayesian analysis.
+# Each fit is joint across biopsy sites and SS/IMF compartments.
+
+enabled: true
+analysis_id: "instance"
+
+paths:
+  input_csv: "/workspaces/mito-counter/data/Calpaine_3_patients/results/measurements_cleaned.csv"
+  summary_csv: "/workspaces/mito-counter/data/Calpaine_3_patients/results/hierarchical_bayes_statistics.csv"
+  trace_dir: "/workspaces/mito-counter/data/Calpaine_3_patients/results/bayes_traces"
+  figure_root: "/workspaces/mito-counter/data/Calpaine_3_patients/results/figures/bayesian"
+
+runtime:
+  # Four chain processes per fit x seven simultaneous fits = 28 CPU cores.
+  cores: 4
+  concurrent_fits: 7
+  seed: 20260811
+  save_idata: true
+  summary_update_mode: "merge"
+  retry_on_warnings: false
+  retry_max_draws: 8000
+  retry_max_tune: 10000
+  retry_max_target_accept: 0.999
+
+filters:
+  minimum_zoom: 4700.0
+  maximum_zoom: 4900.0
+
+model:
+  condition_column: "Condition"
+  patient_column: "IDENTIFIER"
+  genotype_column: "GENOTYPE"
+  age_column: "AGE"
+  gender_column: "GENDER"
+  site_column: "SITE OF BIOPSY"
+  compartment_column: "Compartment"
+  image_column: "image"
+  image_region_column: "Image_Region"
+  image_area_column: "Image_area_nm2"
+  reference:
+    control_condition: "CTRL"
+    disease_condition: "CAPN3"
+    reference_site: "Deltoid"
+    comparison_site: "Quadriceps"
+    reference_gender: "F"
+    comparison_gender: "M"
+    reference_compartment: "Intermyofibrillar (IMF)"
+    comparison_compartment: "Sub-sarcolemmal (SS)"
+    control_genotype: "ref/ref"
+    disease_genotypes:
+      - "non_null/non_null"
+      - "null/non_null"
+      - "null/null"
+  age:
+    maturation_age: 25.0
+    aging_start_age: 50.0
+    aging_scale_years: 10.0
+  priors:
+    intercept_sigma: 1.5
+    coefficient_sigma: 0.5
+    interaction_sigma: 0.25
+    subtype_sigma: 0.35
+    random_effect_sigma: 0.75
+    residual_sigma: 1.0
+    negative_binomial_alpha_rate: 1.0
+  site_sensitivity:
+    enabled: true
+    primary_strategy: "exclude"
+    unknown_values:
+      - "NA"
+      - "N/A"
+      - "UNKNOWN"
+
+available_options:
+  likelihoods: ["lognormal", "gamma", "beta", "negative_binomial", "student_t"]
+  summary_update_modes: ["merge", "replace"]
+  enabled_options: [true, false]
+
+fits:
+  area:
+    metric: "Area"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  corrected_area:
+    metric: "Corrected_area"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  major_axis_length:
+    metric: "Major_axis_length"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  minor_axis_length:
+    metric: "Minor_axis_length"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  minimum_feret_diameter:
+    metric: "Minimum_Feret_Diameter"
+    enabled: true
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  eccentricity:
+    metric: "Eccentricity"
+    enabled: true
+    likelihood: "beta"
+    draws: 2500
+    tune: 3500
+    chains: 4
+    target_accept: 0.995
+  circularity:
+    metric: "Circularity"
+    enabled: true
+    likelihood: "beta"
+    draws: 2500
+    tune: 3500
+    chains: 4
+    target_accept: 0.995
+  solidity:
+    metric: "Solidity"
+    enabled: true
+    likelihood: "beta"
+    draws: 2500
+    tune: 3500
+    chains: 4
+    target_accept: 0.995
+  nnd:
+    metric: "NND"
+    enabled: true
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 5000
+    chains: 4
+    target_accept: 0.997
+  third_nnd:
+    metric: "3NND"
+    enabled: true
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 5000
+    chains: 4
+    target_accept: 0.997
+  fifth_nnd:
+    metric: "5NND"
+    enabled: true
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 5000
+    chains: 4
+    target_accept: 0.997
+  voronoi_cell_area:
+    metric: "Voronoi_Cell_Area"
+    enabled: true
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 5000
+    chains: 4
+    target_accept: 0.997

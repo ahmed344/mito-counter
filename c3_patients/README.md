@@ -150,6 +150,136 @@ Compartment-specific files use `Intermyofibrillar (IMF)` or
 with the value `All compartments`. Eccentricity is bounded from 0 to 1 and
 replaces elongation in final measurement outputs.
 
+## 6. Fit hierarchical Bayesian models
+
+The patient models are independent of the animal-model scripts. They adjust the
+CAPN3-versus-CTRL contrast for biopsy site, gender, age, and compartment while
+partially pooling patient and CAPN3-genotype effects. Instance observations also
+have an image random intercept.
+
+Validate every enabled instance fit and all site scenarios without sampling:
+
+```bash
+python c3_patients/hierarchical_bayes_metrics.py \
+  --config c3_patients/hierarchical_bayes_config.yaml \
+  --validate-only
+```
+
+Validate the image-summary analysis:
+
+```bash
+python c3_patients/hierarchical_bayes_metrics.py \
+  --config c3_patients/hierarchical_bayes_image_summary_config.yaml \
+  --validate-only
+```
+
+Run a targeted prior-predictive model-build check:
+
+```bash
+python c3_patients/hierarchical_bayes_metrics.py \
+  --config c3_patients/hierarchical_bayes_config.yaml \
+  --fit-id eccentricity \
+  --scenario primary_exclude_unknown \
+  --prior-predictive-draws 20
+```
+
+Remove `--validate-only` and `--prior-predictive-draws` to run NUTS. Without
+`--fit-id`, every fit with `enabled: true` runs in YAML order. A disabled fit
+cannot be requested from the command line. Without `--scenario`, each metric is
+fit five times: the primary analysis excludes the two patients with unknown
+biopsy sites, and the four sensitivity analyses assign those patients to
+Deltoid/Deltoid, Deltoid/Quadriceps, Quadriceps/Deltoid, and
+Quadriceps/Quadriceps. Trace filenames and summary rows retain the scenario and
+the explicit assignments.
+
+The shipped patient YAMLs set `runtime.cores: 4` and
+`runtime.concurrent_fits: 7`. Each fit/scenario job therefore runs four PyMC
+chains in parallel, while up to seven independent jobs run concurrently for a
+maximum sampling budget of 28 CPU cores. Numerical-library threads are limited
+to one inside the worker processes to prevent hidden BLAS/OpenMP
+oversubscription. Use `--concurrent-fits 1` to restore serial execution and one
+interactive progress bar, or a smaller value when memory is constrained.
+Validation and prior-predictive modes remain sequential.
+
+Age is not standardized as one linear predictor. The two configured biological
+basis terms are:
+
+```text
+maturation(age) = min(age, 25) / 25
+aging(age)      = max(age - 50, 0) / 10
+```
+
+The instance YAML disables `Area`, `Corrected_area`, `Major_axis_length`, and
+`Minor_axis_length`. The image-summary YAML also disables their means/sums and
+all morphology sums. `Eccentricity` and `Eccentricity_mean` use a Beta
+likelihood and therefore must remain strictly inside `(0, 1)`.
+
+Use `Instance_count`, with `log(Image_area_nm2)` as a negative-binomial
+exposure offset, for abundance. Do not interpret `Density` as a separate
+outcome: in these files it duplicates `Instance_count` because image area is
+constant. Ripley-L and pair-correlation integrals are marked exploratory
+because their current estimators do not apply boundary correction.
+
+Successful fits update the configured summary CSV by
+`analysis_id`/`fit_id`/site scenario and save ArviZ NetCDF traces when
+`runtime.save_idata` is true. `summary_update_mode: merge` preserves unrelated
+rows; `replace` starts a fresh summary for the current command.
+Summary rows contain standardized CAPN3-versus-CTRL effects, all four
+site/compartment disease contrasts, CAPN3 subtype deviations and pairwise
+subtype contrasts, convergence diagnostics, divergences, and lightweight
+posterior-predictive discrepancies. Concurrent workers write only their unique
+NetCDF traces; the parent process serializes summary CSV updates as each job
+finishes.
+
+## 7. Visualize Bayesian fits and patient-level measurements
+
+Generate the complete primary-scenario diagnostics, posterior-predictive checks,
+adjusted-effect forests, observed patient superplots, and five-scenario
+sensitivity forests for instance fits:
+
+```bash
+python c3_patients/hierarchical_bayes_visualization.py \
+  --config c3_patients/hierarchical_bayes_config.yaml
+```
+
+Generate the image-summary figures:
+
+```bash
+python c3_patients/hierarchical_bayes_visualization.py \
+  --config c3_patients/hierarchical_bayes_image_summary_config.yaml
+```
+
+Use `--fit-id eccentricity` to test one enabled fit and `--overwrite` to replace
+existing PNGs. PPC reconstruction is deterministic; `--ppc-seed`,
+`--ppc-draws`, and `--ppc-observations` control its bounded simulation sample.
+The visualizer never refits MCMC.
+
+Each configured `figure_root` receives `diagnostics/`, `ppc/`, `posteriors/`,
+`observed/`, `sensitivity/`, and `overview/` directories plus
+`visualization_manifest.csv`. Full diagnostics are generated for
+`primary_exclude_unknown`; each sensitivity forest compares it with all four
+deterministic assignments of the two unknown-site patients.
+
+All currently saved fits contain divergent transitions. Every inferential
+figure therefore displays convergence information and must be treated as
+provisional until the sampler geometry is corrected and the models are refit.
+Ripley-L and pair-correlation integral figures carry an additional exploratory
+label because their estimators lack boundary correction.
+
+`metric_stats.py` is a Jupytext percent-format notebook. Open it in Jupyter or
+the VS Code Jupyter extension to run instance and image-summary cells
+individually. It can also generate all descriptive outputs from the terminal:
+
+```bash
+python c3_patients/metric_stats.py
+```
+
+The notebook emphasizes equal-weight patient summaries over raw
+mitochondrion/image points. Its Mann–Whitney, rank-biserial, Kruskal–Wallis,
+and subtype pairwise tables aggregate to patient×site×compartment first and are
+strictly exploratory; the covariate-adjusted Bayesian model remains the primary
+analysis.
+
 ## Completion checks
 
 Before later statistical analysis, confirm:
@@ -165,5 +295,5 @@ Before later statistical analysis, confirm:
 5. Overlay QC is acceptable across both conditions and compartments.
 6. `Eccentricity` values are between 0 and 1.
 
-Statistical tests and hierarchical Bayesian models are intentionally outside
-this pipeline stage.
+The full MCMC batch is intentionally separate from measurement generation so
+individual metrics and site sensitivities can be staged and reviewed.

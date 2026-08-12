@@ -36,6 +36,7 @@ SPATIAL_MAX_RADIUS_FRACTION = 0.25
 SS_LABEL = "Sub-sarcolemmal (SS)"
 IMF_LABEL = "Intermyofibrillar (IMF)"
 ALL_COMPARTMENTS_LABEL = "All compartments"
+CTRL_DEFAULT_GENOTYPE = "ref/ref"
 MAGNIFICATION_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*[xX]")
 
 PATIENT_FIELDS = [
@@ -564,10 +565,13 @@ def load_image_records(input_root: Path) -> dict[ImageKey, ImageRecord]:
         pixel_size_nm, pixel_size_source, magnification = resolve_pixel_size(
             metadata, image_label, image_path
         )
+        genotype = basic_value(basic, "GENOTYPE")
+        if not genotype and condition.upper() == "CTRL":
+            genotype = CTRL_DEFAULT_GENOTYPE
         record = ImageRecord(
             condition=condition,
             identifier=identifier,
-            genotype=basic_value(basic, "GENOTYPE"),
+            genotype=genotype,
             dob=basic_value(basic, "DOB"),
             age=basic_value(basic, "AGE"),
             gender=basic_value(basic, "GENDER", "SEX"),

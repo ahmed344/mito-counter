@@ -1,0 +1,251 @@
+# CAPN3 patient image-summary hierarchical Bayesian analysis.
+# SS and IMF images are modeled jointly with a compartment covariate.
+
+enabled: true
+analysis_id: "image_summary"
+
+paths:
+  input_csvs:
+    - "/workspaces/mito-counter/data/Calpaine_3_patients/results/measurements_cleaned_ss_summary.csv"
+    - "/workspaces/mito-counter/data/Calpaine_3_patients/results/measurements_cleaned_imf_summary.csv"
+  summary_csv: "/workspaces/mito-counter/data/Calpaine_3_patients/results/hierarchical_bayes_statistics_image_summary.csv"
+  trace_dir: "/workspaces/mito-counter/data/Calpaine_3_patients/results/bayes_traces_image_summary"
+  figure_root: "/workspaces/mito-counter/data/Calpaine_3_patients/results/figures/bayesian_image_summary"
+
+runtime:
+  # Four chain processes per fit x seven simultaneous fits = 28 CPU cores.
+  cores: 4
+  concurrent_fits: 7
+  seed: 20260811
+  save_idata: true
+  summary_update_mode: "merge"
+  retry_on_warnings: false
+  retry_max_draws: 8000
+  retry_max_tune: 10000
+  retry_max_target_accept: 0.999
+
+filters:
+  minimum_zoom: 4700.0
+  maximum_zoom: 4900.0
+
+model:
+  condition_column: "Condition"
+  patient_column: "IDENTIFIER"
+  genotype_column: "GENOTYPE"
+  age_column: "AGE"
+  gender_column: "GENDER"
+  site_column: "SITE OF BIOPSY"
+  compartment_column: "Compartment"
+  image_column: "image"
+  image_region_column: "Image_Region"
+  image_area_column: "Image_area_nm2"
+  reference:
+    control_condition: "CTRL"
+    disease_condition: "CAPN3"
+    reference_site: "Deltoid"
+    comparison_site: "Quadriceps"
+    reference_gender: "F"
+    comparison_gender: "M"
+    reference_compartment: "Intermyofibrillar (IMF)"
+    comparison_compartment: "Sub-sarcolemmal (SS)"
+    control_genotype: "ref/ref"
+    disease_genotypes:
+      - "non_null/non_null"
+      - "null/non_null"
+      - "null/null"
+  age:
+    maturation_age: 25.0
+    aging_start_age: 50.0
+    aging_scale_years: 10.0
+  priors:
+    intercept_sigma: 1.5
+    coefficient_sigma: 0.5
+    interaction_sigma: 0.25
+    subtype_sigma: 0.35
+    random_effect_sigma: 0.75
+    residual_sigma: 1.0
+    negative_binomial_alpha_rate: 1.0
+  site_sensitivity:
+    enabled: true
+    primary_strategy: "exclude"
+    unknown_values:
+      - "NA"
+      - "N/A"
+      - "UNKNOWN"
+
+available_options:
+  likelihoods: ["lognormal", "gamma", "beta", "negative_binomial", "student_t"]
+  summary_update_modes: ["merge", "replace"]
+  enabled_options: [true, false]
+
+fits:
+  density:
+    metric: "Density"
+    enabled: false
+    likelihood: "negative_binomial"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  instance_count:
+    metric: "Instance_count"
+    enabled: true
+    likelihood: "negative_binomial"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  area_sum:
+    metric: "Area_sum"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  corrected_area_sum:
+    metric: "Corrected_area_sum"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  minimum_feret_diameter_sum:
+    metric: "Minimum_Feret_Diameter_sum"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  minor_axis_length_sum:
+    metric: "Minor_axis_length_sum"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  area_mean:
+    metric: "Area_mean"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  corrected_area_mean:
+    metric: "Corrected_area_mean"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  minimum_feret_diameter_mean:
+    metric: "Minimum_Feret_Diameter_mean"
+    enabled: true
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  major_axis_length_mean:
+    metric: "Major_axis_length_mean"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  minor_axis_length_mean:
+    metric: "Minor_axis_length_mean"
+    enabled: false
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4000
+    chains: 4
+    target_accept: 0.995
+  eccentricity_mean:
+    metric: "Eccentricity_mean"
+    enabled: true
+    likelihood: "beta"
+    draws: 2500
+    tune: 3500
+    chains: 4
+    target_accept: 0.995
+  circularity_mean:
+    metric: "Circularity_mean"
+    enabled: true
+    likelihood: "beta"
+    draws: 2500
+    tune: 3500
+    chains: 4
+    target_accept: 0.995
+  solidity_mean:
+    metric: "Solidity_mean"
+    enabled: true
+    likelihood: "beta"
+    draws: 2500
+    tune: 3500
+    chains: 4
+    target_accept: 0.995
+  nnd_center_mean:
+    metric: "NND_center_mean"
+    enabled: true
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4500
+    chains: 4
+    target_accept: 0.997
+  third_nnd_center_mean:
+    metric: "3NND_center_mean"
+    enabled: true
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4500
+    chains: 4
+    target_accept: 0.997
+  fifth_nnd_center_mean:
+    metric: "5NND_center_mean"
+    enabled: true
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4500
+    chains: 4
+    target_accept: 0.997
+  voronoi_cell_area_center_mean:
+    metric: "Voronoi_Cell_Area_center_mean"
+    enabled: true
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4500
+    chains: 4
+    target_accept: 0.997
+  voronoi_cell_area_center_cv:
+    metric: "Voronoi_Cell_Area_center_cv"
+    enabled: true
+    likelihood: "lognormal"
+    draws: 3000
+    tune: 4500
+    chains: 4
+    target_accept: 0.997
+  ripley_l_integral:
+    metric: "Ripley_L_integral"
+    enabled: true
+    likelihood: "student_t"
+    draws: 3000
+    tune: 4500
+    chains: 4
+    target_accept: 0.997
+    exploratory: true
+  pair_correlation_integral:
+    metric: "Pair_Correlation_integral"
+    enabled: true
+    likelihood: "student_t"
+    draws: 3000
+    tune: 4500
+    chains: 4
+    target_accept: 0.997
+    exploratory: true
