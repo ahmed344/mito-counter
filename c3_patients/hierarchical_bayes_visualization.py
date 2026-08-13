@@ -50,6 +50,13 @@ SCENARIO_ORDER = (
 CONDITION_LABELS = ("CTRL", "CAPN3")
 FIGURE_DPI = 300
 HDI_PROBABILITY = 0.95
+DIAGNOSTIC_LAYOUT_RECT: tuple[float, float, float, float] = (0.0, 0.05, 1.0, 0.94)
+TRACE_HSPACE = 0.78
+TRACE_RANK_HSPACE = 0.62
+RHAT_CENTER = 1.0
+RHAT_THRESHOLD_LOW = 0.99
+RHAT_THRESHOLD_HIGH = 1.01
+HDI_TYPICAL_WIDTH_MULTIPLIER = 3.0
 METRIC_UNITS: dict[str, str] = {
     "Minimum_Feret_Diameter": "nm",
     "Eccentricity": "unitless",
@@ -178,6 +185,323 @@ def add_quality_banner(figure: plt.Figure, row: pd.Series) -> None:
         color="darkred" if warning else "0.3",
         weight="bold" if warning else "normal",
     )
+
+
+def apply_tight_layout(
+    figure: plt.Figure,
+    rect: tuple[float, float, float, float] = DIAGNOSTIC_LAYOUT_RECT,
+) -> None:
+    """Apply tight layout while reserving room for the title and quality banner.
+
+    Args:
+        figure (plt.Figure): Figure whose subplot spacing should be tightened.
+        rect (tuple[float, float, float, float]): ``tight_layout`` rectangle
+            ``(left, bottom, right, top)`` in figure coordinates.
+
+    Returns:
+        None: Mutates the figure layout.
+    """
+
+    figure.tight_layout(rect=rect)
+
+
+def increase_row_spacing(figure: plt.Figure, hspace: float) -> None:
+    """Increase vertical space between subplot rows after tight layout.
+
+    Args:
+        figure (plt.Figure): Figure whose row spacing should be increased.
+        hspace (float): Matplotlib ``hspace`` value passed to ``subplots_adjust``.
+
+    Returns:
+        None: Mutates the figure layout without changing outer margins.
+    """
+
+    figure.subplots_adjust(hspace=hspace)
+
+
+def hide_inner_tick_labels(axes: Any) -> None:
+    """Keep x labels on the bottom row and y labels on the left column only.
+
+    Args:
+        axes (Any): Axes, sequence of axes, or ndarray returned by an ArviZ plot.
+
+    Returns:
+        None: Mutates tick and axis labels on the provided axes.
+    """
+
+    axes_list = [
+        axis
+        for axis in np.asarray(axes, dtype=object).ravel()
+        if axis is not None
+    ]
+    if not axes_list:
+        return
+    row_positions = sorted({round(axis.get_position().y0, 3) for axis in axes_list})
+    column_positions = sorted({round(axis.get_position().x0, 3) for axis in axes_list})
+    bottom_row = row_positions[0]
+    left_column = column_positions[0]
+    for axis in axes_list:
+        if round(axis.get_position().y0, 3) != bottom_row:
+            axis.set_xlabel("")
+            axis.tick_params(axis="x", labelbottom=False)
+        if round(axis.get_position().x0, 3) != left_column:
+            axis.set_ylabel("")
+            axis.tick_params(axis="y", labelleft=False)
+
+
+def robust_hdi_xlim(lows: np.ndarray, highs: np.ndarray) -> tuple[float, float]:
+    """Compute a shared HDI x-limit from typical interval widths.
+
+    Args:
+        lows (np.ndarray): Lower HDI endpoints.
+        highs (np.ndarray): Upper HDI endpoints.
+
+    Returns:
+        tuple[float, float]: Padded lower and upper x-limits that ignore
+            intervals wider than ``HDI_TYPICAL_WIDTH_MULTIPLIER`` times the
+            median width, falling back to the IQR of all endpoints.
+    """
+
+    lower_bounds = np.asarray(lows, dtype=float)
+    upper_bounds = np.asarray(highs, dtype=float)
+    finite = np.isfinite(lower_bounds) & np.isfinite(upper_bounds)
+    lower_bounds = lower_bounds[finite]
+    upper_bounds = upper_bounds[finite]
+    if lower_bounds.size == 0:
+        return (-1.0, 1.0)
+    widths = np.maximum(upper_bounds - lower_bounds, 0.0)
+    median_width = float(np.median(widths))
+    typical = widths <= max(HDI_TYPICAL_WIDTH_MULTIPLIER * median_width, 1e-12)
+    if np.any(typical):
+        selected_low = lower_bounds[typical]
+        selected_high = upper_bounds[typical]
+        lower = float(np.min(selected_low))
+        upper = float(np.max(selected_high))
+    else:
+        bounds = np.concatenate([lower_bounds, upper_bounds])
+        quartile_low, quartile_high = np.quantile(bounds, [0.25, 0.75])
+        lower = float(quartile_low)
+        upper = float(quartile_high)
+    span = max(upper - lower, 1e-6)
+    padding = 0.05 * span
+    return (lower - padding, upper + padding)
+
+
+def symmetric_rhat_xlim(rhat_values: np.ndarray) -> tuple[float, float]:
+    """Compute symmetric R-hat x-limits centered at one.
+
+    Args:
+        rhat_values (np.ndarray): R-hat values for the plotted parameters.
+
+    Returns:
+        tuple[float, float]: Lower and upper bounds centered at ``RHAT_CENTER``
+            with half-width of at least ``0.02`` so the 0.99 and 1.01
+            thresholds remain visible.
+    """
+
+    finite_values = np.asarray(rhat_values, dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if finite_values.size == 0:
+        return (RHAT_CENTER - 0.02, RHAT_CENTER + 0.02)
+    max_deviation = float(np.max(np.abs(finite_values - RHAT_CENTER)))
+    half_width = max(0.02, 1.12 * max_deviation)
+    half_width = min(0.5, half_width)
+    return (RHAT_CENTER - half_width, RHAT_CENTER + half_width)
+
+
+def hdi_column_names(summary: pd.DataFrame) -> tuple[str, str]:
+    """Return the lower and upper HDI column names from an ArviZ summary.
+
+    Args:
+        summary (pd.DataFrame): Output of ``az.summary``.
+
+    Returns:
+        tuple[str, str]: Lower and upper HDI column names.
+
+    Raises:
+        KeyError: If the summary does not contain two HDI columns.
+    """
+
+    columns = [str(column) for column in summary.columns if str(column).startswith("hdi_")]
+    if len(columns) < 2:
+        raise KeyError(f"Expected two HDI columns in summary; found {columns}.")
+
+    ordered = sorted(columns, key=hdi_column_percent)
+    return ordered[0], ordered[-1]
+
+
+def hdi_column_percent(column: str) -> float:
+    """Parse the percentage encoded in an HDI column name.
+
+    Args:
+        column (str): Column name such as ``hdi_2.5%``.
+
+    Returns:
+        float: Numeric percentage used for sorting.
+    """
+
+    return float(column.replace("hdi_", "").replace("%", ""))
+
+
+def order_summary_rows(summary: pd.DataFrame, names: list[str]) -> pd.DataFrame:
+    """Reorder summary rows to follow the requested variable-name sequence.
+
+    Args:
+        summary (pd.DataFrame): ArviZ summary indexed by parameter labels.
+        names (list[str]): Top-level posterior variable names in display order.
+
+    Returns:
+        pd.DataFrame: Rows matching ``names``, including indexed coordinates.
+    """
+
+    labels = summary.index.astype(str)
+    selected: list[int] = []
+    used: set[int] = set()
+    for name in names:
+        for position, label in enumerate(labels):
+            if position in used:
+                continue
+            if label == name or label.startswith(f"{name}["):
+                selected.append(position)
+                used.add(position)
+    if not selected:
+        return summary.iloc[0:0].copy()
+    return summary.iloc[selected].copy()
+
+
+def forest_parameter_rows(
+    idata: az.InferenceData,
+    names: list[str],
+) -> pd.DataFrame:
+    """Build one forest-plot row per posterior parameter coordinate.
+
+    Args:
+        idata (az.InferenceData): Saved posterior.
+        names (list[str]): Top-level posterior variable names to include.
+
+    Returns:
+        pd.DataFrame: Median, 95% HDI, R-hat, and ESS columns ordered by
+            ``names``.
+    """
+
+    empty = pd.DataFrame(
+        columns=["median", "hdi_low", "hdi_high", "r_hat", "ess_bulk", "ess_tail"]
+    )
+    if not names:
+        return empty
+    summary = az.summary(
+        idata,
+        var_names=names,
+        hdi_prob=HDI_PROBABILITY,
+        kind="all",
+        round_to=None,
+    )
+    summary = order_summary_rows(summary, names)
+    if summary.empty:
+        return empty
+    low_column, high_column = hdi_column_names(summary)
+    median_summary = az.summary(
+        idata,
+        var_names=names,
+        kind="stats",
+        stat_focus="median",
+        round_to=None,
+    )
+    median_summary = order_summary_rows(median_summary, names)
+    aligned_median = (
+        median_summary["median"].reindex(summary.index)
+        if "median" in median_summary.columns
+        else summary["mean"]
+    )
+    n_rows = len(summary)
+    rows = pd.DataFrame(
+        {
+            "median": pd.to_numeric(aligned_median, errors="coerce").to_numpy(dtype=float),
+            "hdi_low": pd.to_numeric(summary[low_column], errors="coerce").to_numpy(dtype=float),
+            "hdi_high": pd.to_numeric(summary[high_column], errors="coerce").to_numpy(dtype=float),
+            "r_hat": pd.to_numeric(summary["r_hat"], errors="coerce").to_numpy(dtype=float)
+            if "r_hat" in summary.columns
+            else np.full(n_rows, np.nan),
+            "ess_bulk": pd.to_numeric(summary["ess_bulk"], errors="coerce").to_numpy(dtype=float)
+            if "ess_bulk" in summary.columns
+            else np.full(n_rows, np.nan),
+            "ess_tail": pd.to_numeric(summary["ess_tail"], errors="coerce").to_numpy(dtype=float)
+            if "ess_tail" in summary.columns
+            else np.full(n_rows, np.nan),
+        },
+        index=summary.index.astype(str),
+    )
+    return rows
+
+
+def draw_clipped_hdi(
+    axis: plt.Axes,
+    y_value: float,
+    median: float,
+    hdi_low: float,
+    hdi_high: float,
+    xlim: tuple[float, float],
+) -> None:
+    """Draw one HDI bar, clipping outliers and annotating truncated intervals.
+
+    Args:
+        axis (plt.Axes): Forest-plot axis.
+        y_value (float): Vertical position of the interval.
+        median (float): Posterior median used as the point marker.
+        hdi_low (float): Lower 95% HDI endpoint.
+        hdi_high (float): Upper 95% HDI endpoint.
+        xlim (tuple[float, float]): Shared robust x-limits.
+
+    Returns:
+        None: Mutates ``axis``.
+    """
+
+    x_min, x_max = xlim
+    span = max(x_max - x_min, 1e-12)
+    arrow_len = 0.045 * span
+    visible_low = min(max(hdi_low, x_min), x_max)
+    visible_high = max(min(hdi_high, x_max), x_min)
+    left_clipped = bool(np.isfinite(hdi_low) and hdi_low < x_min)
+    right_clipped = bool(np.isfinite(hdi_high) and hdi_high > x_max)
+    if visible_high > visible_low:
+        axis.hlines(
+            y_value,
+            visible_low,
+            visible_high,
+            color="midnightblue",
+            linewidth=2.2,
+            zorder=2,
+        )
+    if left_clipped:
+        axis.annotate(
+            "",
+            xy=(x_min, y_value),
+            xytext=(x_min + arrow_len, y_value),
+            arrowprops={"arrowstyle": "-|>", "color": "midnightblue", "lw": 1.4},
+            annotation_clip=False,
+        )
+    if right_clipped:
+        axis.annotate(
+            "",
+            xy=(x_max, y_value),
+            xytext=(x_max - arrow_len, y_value),
+            arrowprops={"arrowstyle": "-|>", "color": "midnightblue", "lw": 1.4},
+            annotation_clip=False,
+        )
+    if np.isfinite(median) and x_min <= median <= x_max:
+        axis.plot(median, y_value, "o", color="black", markersize=5.0, zorder=3)
+    if left_clipped or right_clipped:
+        text_x = float(np.clip(median, x_min, x_max)) if np.isfinite(median) else 0.5 * (x_min + x_max)
+        axis.annotate(
+            f"[{hdi_low:.3g}, {hdi_high:.3g}]",
+            xy=(text_x, y_value),
+            xytext=(0, 5),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=7,
+            color="0.25",
+        )
 
 
 def load_summary(config: PatientBayesAnalysisConfig) -> pd.DataFrame:
@@ -379,10 +703,12 @@ def plot_trace(
         idata,
         var_names=names,
         compact=True,
-        figsize=(14, max(8, 2.6 * len(names))),
+        figsize=(14, max(8, 3.0 * len(names))),
     )
     figure = np.asarray(axes).ravel()[0].figure
-    figure.suptitle(f"{row['metric']} — primary trace diagnostics", y=1.002)
+    figure.suptitle(f"{row['metric']} — primary trace diagnostics")
+    apply_tight_layout(figure)
+    increase_row_spacing(figure, TRACE_HSPACE)
     add_quality_banner(figure, row)
     return figure
 
@@ -407,10 +733,13 @@ def plot_rank(
         idata,
         var_names=names,
         kind="bars",
-        figsize=(13, max(7, 2.2 * math.ceil(len(names) / 2))),
+        figsize=(13, max(7, 2.5 * math.ceil(len(names) / 2))),
     )
     figure = np.asarray(axes).ravel()[0].figure
-    figure.suptitle(f"{row['metric']} — chain rank diagnostics", y=1.002)
+    hide_inner_tick_labels(axes)
+    figure.suptitle(f"{row['metric']} — chain rank diagnostics")
+    apply_tight_layout(figure)
+    increase_row_spacing(figure, TRACE_RANK_HSPACE)
     add_quality_banner(figure, row)
     return figure
 
@@ -431,17 +760,91 @@ def plot_forest(
         plt.Figure: Forest diagnostic figure.
     """
 
-    axes = az.plot_forest(
-        idata,
-        var_names=names,
-        combined=True,
-        hdi_prob=HDI_PROBABILITY,
-        r_hat=True,
-        ess=True,
-        figsize=(13, max(7, 0.7 * len(names) + 4)),
+    parameters = forest_parameter_rows(idata, names)
+    n_rows = max(len(parameters), 1)
+    figure, axes = plt.subplots(
+        1,
+        3,
+        figsize=(13, max(7, 0.45 * n_rows + 3.5)),
+        sharey=True,
+        gridspec_kw={"width_ratios": [3.2, 1.1, 1.1]},
     )
-    figure = np.asarray(axes).ravel()[0].figure
-    figure.suptitle(f"{row['metric']} — posterior and convergence", y=1.002)
+    forest_axis, rhat_axis, ess_axis = axes
+    if parameters.empty:
+        forest_axis.set_xlabel("Posterior (95% HDI)")
+        rhat_axis.set_xlabel("R-hat")
+        ess_axis.set_xlabel("ESS")
+        figure.suptitle(f"{row['metric']} — posterior and convergence")
+        apply_tight_layout(figure)
+        add_quality_banner(figure, row)
+        return figure
+
+    positions = np.arange(len(parameters), dtype=float)
+    hdi_xlim = robust_hdi_xlim(parameters["hdi_low"].to_numpy(), parameters["hdi_high"].to_numpy())
+    rhat_xlim = symmetric_rhat_xlim(parameters["r_hat"].to_numpy())
+    for y_value, (_, record) in zip(positions, parameters.iterrows(), strict=True):
+        draw_clipped_hdi(
+            axis=forest_axis,
+            y_value=float(y_value),
+            median=float(record["median"]),
+            hdi_low=float(record["hdi_low"]),
+            hdi_high=float(record["hdi_high"]),
+            xlim=hdi_xlim,
+        )
+        rhat_value = float(record["r_hat"])
+        if np.isfinite(rhat_value):
+            rhat_axis.plot(
+                rhat_value,
+                y_value,
+                marker="o",
+                color="tab:orange",
+                markersize=6.0,
+                zorder=3,
+            )
+        ess_bulk = float(record["ess_bulk"])
+        ess_tail = float(record["ess_tail"])
+        if np.isfinite(ess_bulk):
+            ess_axis.plot(
+                ess_bulk,
+                y_value,
+                marker="o",
+                color="midnightblue",
+                markersize=6.0,
+                zorder=3,
+                label="bulk" if y_value == positions[0] else None,
+            )
+        if np.isfinite(ess_tail):
+            ess_axis.plot(
+                ess_tail,
+                y_value,
+                marker="s",
+                color="steelblue",
+                markersize=5.5,
+                zorder=3,
+                label="tail" if y_value == positions[0] else None,
+            )
+
+    forest_axis.set_yticks(positions, parameters.index.astype(str))
+    forest_axis.set_xlim(hdi_xlim)
+    forest_axis.set_xlabel("Posterior (95% HDI)")
+    forest_axis.grid(axis="x", alpha=0.2)
+    forest_axis.invert_yaxis()
+
+    rhat_axis.set_xlim(rhat_xlim)
+    rhat_axis.axvline(RHAT_CENTER, color="0.75", linestyle="--", linewidth=1.0)
+    rhat_axis.axvline(RHAT_THRESHOLD_LOW, color="red", linestyle="--", linewidth=1.0)
+    rhat_axis.axvline(RHAT_THRESHOLD_HIGH, color="red", linestyle="--", linewidth=1.0)
+    rhat_axis.set_xlabel("R-hat")
+    rhat_axis.grid(axis="x", alpha=0.2)
+
+    ess_axis.set_xlabel("ESS")
+    ess_axis.grid(axis="x", alpha=0.2)
+    handles, labels = ess_axis.get_legend_handles_labels()
+    if handles:
+        ess_axis.legend(handles, labels, frameon=False, fontsize=8)
+
+    figure.suptitle(f"{row['metric']} — posterior and convergence")
+    apply_tight_layout(figure)
     add_quality_banner(figure, row)
     return figure
 
@@ -463,6 +866,7 @@ def plot_energy(idata: az.InferenceData, row: pd.Series) -> plt.Figure:
     figure.suptitle(
         f"{row['metric']} — energy diagnostic (BFMI min={np.min(bfmi):.3f})"
     )
+    apply_tight_layout(figure)
     add_quality_banner(figure, row)
     return figure
 
@@ -1301,37 +1705,60 @@ def generate_observed_figures(
         None: Writes observed superplots.
     """
 
-    from stats_utils import patient_superbeeswarm, patient_superviolin
+    from stats_utils import (
+        CONDITION_ORDER,
+        SITE_COMPARTMENT_COLUMN,
+        add_site_compartment_column,
+        bayesian_superplot_annotations,
+        build_output_path,
+        metric_unit_mapping,
+        plot_super_beeswarm,
+        plot_super_violin,
+        site_compartment_labels,
+    )
 
-    plot_summary = {
-        "capn3_effect_response_summary": observed_annotation(row),
-        "fit_status": "ok",
-    }
+    model = config.model
+    plot_data = add_site_compartment_column(
+        frame,
+        site_column=model.site_column,
+        compartment_column=model.compartment_column,
+    )
+    annotations = bayesian_superplot_annotations(row)
+    unit_dict = metric_unit_mapping([fit.metric])
+    save_dir = config.paths.figure_root / "observed"
+    filename_prefix = f"{fit.fit_id}__"
     common = {
-        "data": frame,
-        "metric": fit.metric,
-        "condition_column": config.model.condition_column,
-        "patient_column": config.model.patient_column,
-        "site_column": config.model.site_column,
-        "compartment_column": config.model.compartment_column,
-        "aggregate": "median" if config.analysis_id == "instance" else "mean",
-        "summary_row": plot_summary,
-        "quality_warning": quality_text(row),
-        "title": f"{fit.metric} — observed patient distributions",
+        "data": plot_data,
+        "x": SITE_COMPARTMENT_COLUMN,
+        "y": fit.metric,
+        "hue": model.condition_column,
+        "block": model.patient_column,
+        "unit_dict": unit_dict,
+        "save_dir": save_dir,
+        "title_override": f"{fit.metric} — observed patient distributions",
+        "filename_prefix": filename_prefix,
+        "superplot_annotations": annotations,
+        "x_order_override": site_compartment_labels(),
+        "hue_order_override": list(CONDITION_ORDER),
     }
-    for suffix, plotter in (
-        ("superviolin", patient_superviolin),
-        ("superbeeswarm", patient_superbeeswarm),
+    for plot_function, suffix in (
+        (plot_super_violin, "superviolin"),
+        (plot_super_beeswarm, "superbeeswarm"),
     ):
-        figure, _ = plotter(**common)
-        save_named_figure(
-            figure,
-            figure_path(config.paths.figure_root, "observed", fit.fit_id, suffix),
-            overwrite,
-            row,
-            "observed",
-            records,
+        output_path = build_output_path(
+            y=fit.metric,
+            x=SITE_COMPARTMENT_COLUMN,
+            hue=model.condition_column,
+            save_dir=save_dir,
+            suffix=suffix,
+            filename_prefix=filename_prefix,
         )
+        if output_path is not None and output_path.exists() and not overwrite:
+            add_manifest_record(records, output_path, row, "observed", False)
+            continue
+        written_path = plot_function(**common)
+        if written_path is not None:
+            add_manifest_record(records, written_path, row, "observed", True)
 
 
 def run_visualization(

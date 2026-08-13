@@ -31,7 +31,6 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -49,12 +48,20 @@ from hierarchical_bayes_config import (
 )
 from stats_utils import (
     CAPN3_SUBTYPE_ORDER,
-    CAPN3_SUBTYPE_PALETTE,
     COMPARTMENT_ORDER,
     CONDITION_ORDER,
+    SITE_COMPARTMENT_COLUMN,
     SITE_ORDER,
-    patient_superbeeswarm,
-    patient_superviolin,
+    add_site_compartment_column,
+    bayesian_overall_superplot_annotation,
+    bayesian_superplot_annotations,
+    bayesian_subtype_superplot_annotations,
+    metric_unit_mapping,
+    plot_condition_overview_super_beeswarm,
+    plot_condition_overview_super_violin,
+    plot_super_beeswarm,
+    plot_super_violin,
+    site_compartment_labels,
 )
 
 
@@ -597,7 +604,7 @@ def make_metric_figures(
     summary_row: pd.Series | None,
     figure_dir: Path,
 ) -> list[Path]:
-    """Generate condition and feasible CAPN3-subtype descriptive figures.
+    """Generate condition, two-tick overview, and feasible subtype figures.
 
     Args:
         data (pd.DataFrame): Primary-filtered raw or image-summary rows.
@@ -612,58 +619,78 @@ def make_metric_figures(
     """
 
     model = config.model
-    aggregate = "median" if config.analysis_id == "instance" else "mean"
-    metric_slug = slugify(fit.fit_id)
-    outputs: list[Path] = []
-    condition_specs = (
-        ("superviolin", patient_superviolin),
-        ("superbeeswarm", patient_superbeeswarm),
+    plot_data = add_site_compartment_column(
+        data,
+        site_column=model.site_column,
+        compartment_column=model.compartment_column,
     )
-    for plot_name, plot_function in condition_specs:
-        output = figure_dir / f"{metric_slug}_{plot_name}.png"
-        figure, _ = plot_function(
-            data=data,
-            metric=fit.metric,
-            patient_column=model.patient_column,
-            condition_column=model.condition_column,
-            site_column=model.site_column,
-            compartment_column=model.compartment_column,
-            aggregate=aggregate,
-            summary_row=summary_row,
-            output_path=output,
-            title=f"{fit.metric}: CTRL and CAPN3",
-        )
-        plt.close(figure)
-        outputs.append(output)
+    x_order = site_compartment_labels()
+    unit_dict = metric_unit_mapping([fit.metric])
+    metric_slug = slugify(fit.fit_id)
+    annotations = bayesian_superplot_annotations(summary_row)
+    subtype_annotations = bayesian_subtype_superplot_annotations(summary_row)
+    outputs: list[Path] = []
+    condition_plot_kwargs = {
+        "data": plot_data,
+        "x": SITE_COMPARTMENT_COLUMN,
+        "y": fit.metric,
+        "hue": model.condition_column,
+        "block": model.patient_column,
+        "unit_dict": unit_dict,
+        "save_dir": figure_dir,
+        "title_override": f"{fit.metric}: CTRL and CAPN3",
+        "filename_prefix": f"{metric_slug}_",
+        "superplot_annotations": annotations,
+        "x_order_override": x_order,
+        "hue_order_override": list(CONDITION_ORDER),
+    }
+    violin_output = plot_super_violin(
+        **condition_plot_kwargs,
+        genotype_column=model.genotype_column,
+    )
+    if violin_output is not None:
+        outputs.append(violin_output)
+    beeswarm_output = plot_super_beeswarm(**condition_plot_kwargs)
+    if beeswarm_output is not None:
+        outputs.append(beeswarm_output)
+    overview_plot_kwargs = {
+        "data": plot_data,
+        "y": fit.metric,
+        "condition_column": model.condition_column,
+        "block": model.patient_column,
+        "unit_dict": unit_dict,
+        "save_dir": figure_dir,
+        "title_override": f"{fit.metric}: CTRL vs CAPN3",
+        "filename_prefix": f"{metric_slug}_",
+        "superplot_annotations": bayesian_overall_superplot_annotation(summary_row),
+        "genotype_column": model.genotype_column,
+    }
+    overview_violin = plot_condition_overview_super_violin(**overview_plot_kwargs)
+    outputs.extend(overview_violin)
+    overview_beeswarm = plot_condition_overview_super_beeswarm(**overview_plot_kwargs)
+    outputs.extend(overview_beeswarm)
     if subtype_figure_is_feasible(patient_values, config):
-        capn3_data = data.loc[
-            data[model.condition_column].astype(str) == CONDITION_ORDER[1]
+        capn3_data = plot_data.loc[
+            plot_data[model.condition_column].astype(str) == CONDITION_ORDER[1]
         ].copy()
-        subtype_summary: dict[str, Any] = {
-            "capn3_effect_response_summary": (
-                "not applicable; CAPN3 subtype description"
-            ),
-            "fit_status": "ok",
-        }
-        for plot_name, plot_function in condition_specs:
-            output = figure_dir / f"{metric_slug}_capn3_subtype_{plot_name}.png"
-            figure, _ = plot_function(
+        for plot_function in (plot_super_violin, plot_super_beeswarm):
+            output = plot_function(
                 data=capn3_data,
-                metric=fit.metric,
-                patient_column=model.patient_column,
-                condition_column=model.genotype_column,
-                site_column=model.site_column,
-                compartment_column=model.compartment_column,
-                aggregate=aggregate,
-                summary_row=subtype_summary,
-                output_path=output,
-                title=f"{fit.metric}: CAPN3 subtype (exploratory)",
-                hue_order=CAPN3_SUBTYPE_ORDER,
-                palette=CAPN3_SUBTYPE_PALETTE,
-                quality_warning="Exploratory descriptive comparison",
+                x=SITE_COMPARTMENT_COLUMN,
+                y=fit.metric,
+                hue=model.genotype_column,
+                block=model.patient_column,
+                unit_dict=unit_dict,
+                save_dir=figure_dir,
+                title_override=f"{fit.metric}: CAPN3 subtype",
+                filename_prefix=f"{metric_slug}_",
+                superplot_annotations=subtype_annotations,
+                x_order_override=x_order,
+                hue_order_override=list(CAPN3_SUBTYPE_ORDER),
+                output_dir_suffix="_capn3_subtype",
             )
-            plt.close(figure)
-            outputs.append(output)
+            if output is not None:
+                outputs.append(output)
     return outputs
 
 
