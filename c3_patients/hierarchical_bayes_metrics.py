@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import json
 import os
 import time
 from collections.abc import Iterator
@@ -53,6 +54,45 @@ THREAD_LIMIT_ENVIRONMENT_VARIABLES = (
 )
 
 
+def weighted_sum_to_zero_contrast_basis(weights: np.ndarray) -> np.ndarray:
+    """Build an orthonormal basis satisfying a weighted sum-to-zero constraint.
+
+    Args:
+        weights (np.ndarray): Positive one-dimensional subtype weights.
+
+    Returns:
+        np.ndarray: Basis with shape ``(K, K - 1)`` whose columns are
+            orthonormal and orthogonal to the weight vector.
+    """
+
+    normalized = np.asarray(weights, dtype=float)
+    if normalized.ndim != 1 or normalized.size < 2:
+        raise ValueError("At least two one-dimensional subtype weights are required.")
+    if not np.all(np.isfinite(normalized)) or np.any(normalized <= 0.0):
+        raise ValueError("Subtype weights must be finite and strictly positive.")
+    normalized = normalized / normalized.sum()
+    pivot = int(np.argmax(normalized))
+    nonpivot_indices = [
+        index for index in range(normalized.size) if index != pivot
+    ]
+    raw_basis = np.zeros((normalized.size, normalized.size - 1), dtype=float)
+    for column, index in enumerate(nonpivot_indices):
+        raw_basis[index, column] = 1.0
+        raw_basis[pivot, column] = -normalized[index] / normalized[pivot]
+    basis, _ = np.linalg.qr(raw_basis, mode="reduced")
+    for column in range(basis.shape[1]):
+        anchor = int(np.argmax(np.abs(basis[:, column])))
+        if basis[anchor, column] < 0.0:
+            basis[:, column] *= -1.0
+    if np.linalg.matrix_rank(basis) != normalized.size - 1:
+        raise ValueError("Subtype contrast basis is rank deficient.")
+    if not np.allclose(basis.T @ basis, np.eye(normalized.size - 1)):
+        raise ValueError("Subtype contrast basis is not orthonormal.")
+    if not np.allclose(normalized @ basis, 0.0):
+        raise ValueError("Subtype contrast basis violates weighted sum-to-zero.")
+    return basis
+
+
 @dataclass(frozen=True)
 class SiteScenario:
     """One primary or deterministic unknown-site sensitivity scenario."""
@@ -90,6 +130,8 @@ class PreparedPatientMetricData:
     image_labels: list[str]
     subtype_labels: list[str]
     subtype_weights: np.ndarray
+    subtype_contrast_labels: list[str]
+    subtype_contrast_basis: np.ndarray
     standard_site: np.ndarray
     standard_male: np.ndarray
     standard_maturation: np.ndarray
@@ -630,6 +672,11 @@ def prepare_metric_data(
             f"Scenario lacks configured CAPN3 subtypes: {missing_subtypes}"
         )
     subtype_weights = subtype_counts / subtype_counts.sum()
+    subtype_contrast_basis = weighted_sum_to_zero_contrast_basis(subtype_weights)
+    subtype_contrast_labels = [
+        f"contrast_{index + 1}"
+        for index in range(subtype_contrast_basis.shape[1])
+    ]
 
     patient_idx_obs = metric_df["patient_idx"].to_numpy(dtype=int)
     disease_obs = disease_patient_array[patient_idx_obs]
@@ -677,6 +724,8 @@ def prepare_metric_data(
         image_labels=image_table["image_key"].astype(str).tolist(),
         subtype_labels=list(reference.disease_genotypes),
         subtype_weights=subtype_weights,
+        subtype_contrast_labels=subtype_contrast_labels,
+        subtype_contrast_basis=subtype_contrast_basis,
         standard_site=standard_site,
         standard_male=standard_male,
         standard_maturation=standard_maturation,
@@ -762,16 +811,16 @@ def build_linear_predictor(
     sigma_subtype = pm.HalfNormal(
         "sigma_subtype", sigma=priors.subtype_sigma
     )
-    subtype_raw = pm.Normal(
-        "subtype_raw",
+    subtype_offset = pm.Normal(
+        "subtype_offset",
         mu=0.0,
-        sigma=sigma_subtype,
-        dims="subtype",
+        sigma=1.0,
+        dims="subtype_contrast",
     )
-    weights = pt.as_tensor_variable(data.subtype_weights)
+    contrast_basis = pt.as_tensor_variable(data.subtype_contrast_basis)
     subtype_deviation = pm.Deterministic(
         "subtype_deviation",
-        subtype_raw - pt.sum(subtype_raw * weights),
+        sigma_subtype * pt.dot(contrast_basis, subtype_offset),
         dims="subtype",
     )
     sigma_patient = pm.HalfNormal(
@@ -858,6 +907,7 @@ def build_model(data: PreparedPatientMetricData) -> pm.Model:
         "patient": data.patient_labels,
         "image": data.image_labels,
         "subtype": data.subtype_labels,
+        "subtype_contrast": data.subtype_contrast_labels,
     }
     with pm.Model(coords=coords) as model:
         eta, _ = build_linear_predictor(data=data)
@@ -1142,7 +1192,9 @@ def posterior_diagnostics(idata: az.InferenceData) -> dict[str, Any]:
         "beta_compartment",
         "interaction_disease_site",
         "interaction_disease_compartment",
+        "subtype_offset",
         "subtype_deviation",
+        "sigma_subtype",
         "sigma_patient",
     ]
     if "sigma_image" in idata.posterior:
@@ -1856,6 +1908,13 @@ def save_trace(
             "response_center": result.data.response_center,
             "response_scale": result.data.response_scale,
             "area_reference_nm2": result.data.area_reference_nm2,
+            "subtype_parameterization": "noncentered_weighted_k_minus_one",
+            "subtype_weights_json": json.dumps(
+                result.data.subtype_weights.tolist()
+            ),
+            "subtype_contrast_basis_json": json.dumps(
+                result.data.subtype_contrast_basis.tolist()
+            ),
         }
     )
     az.to_netcdf(result.idata, output_path)
@@ -1988,6 +2047,32 @@ def validate_prepared_data(data: PreparedPatientMetricData) -> None:
         raise ValueError("Both CTRL and CAPN3 patients are required.")
     if not np.isclose(np.sum(data.subtype_weights), 1.0):
         raise ValueError("CAPN3 subtype weights must sum to one.")
+    subtype_count = len(data.subtype_labels)
+    expected_basis_shape = (subtype_count, subtype_count - 1)
+    if data.subtype_weights.shape != (subtype_count,):
+        raise ValueError("CAPN3 subtype weights do not match subtype labels.")
+    if len(data.subtype_contrast_labels) != subtype_count - 1:
+        raise ValueError("CAPN3 contrast labels do not match subtype count.")
+    if data.subtype_contrast_basis.shape != expected_basis_shape:
+        raise ValueError("CAPN3 contrast basis has an invalid shape.")
+    if np.linalg.matrix_rank(data.subtype_contrast_basis) != subtype_count - 1:
+        raise ValueError("CAPN3 contrast basis is rank deficient.")
+    if not np.allclose(
+        data.subtype_contrast_basis.T @ data.subtype_contrast_basis,
+        np.eye(subtype_count - 1),
+    ):
+        raise ValueError("CAPN3 contrast basis is not orthonormal.")
+    if not np.allclose(
+        data.subtype_weights @ data.subtype_contrast_basis, 0.0
+    ):
+        raise ValueError("CAPN3 contrast basis violates weighted sum-to-zero.")
+    disease_subtype_indices = data.subtype_idx_obs[data.disease_obs == 1]
+    if (
+        disease_subtype_indices.size == 0
+        or disease_subtype_indices.min() < 0
+        or disease_subtype_indices.max() >= subtype_count
+    ):
+        raise ValueError("CAPN3 subtype observation indices are out of bounds.")
 
 
 def prior_predictive_smoke(
@@ -2010,7 +2095,12 @@ def prior_predictive_smoke(
     with model:
         pm.sample_prior_predictive(
             samples=draws,
-            var_names=["observed_metric", "beta_disease"],
+            var_names=[
+                "observed_metric",
+                "beta_disease",
+                "subtype_offset",
+                "subtype_deviation",
+            ],
             random_seed=random_seed,
             return_inferencedata=False,
         )

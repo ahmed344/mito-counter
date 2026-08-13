@@ -345,6 +345,7 @@ def diagnostic_variable_names(
         "beta_compartment",
         "interaction_disease_site",
         "interaction_disease_compartment",
+        "subtype_offset",
         "subtype_deviation",
         "sigma_subtype",
         "sigma_patient",

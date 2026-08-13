@@ -157,6 +157,16 @@ CAPN3-versus-CTRL contrast for biopsy site, gender, age, and compartment while
 partially pooling patient and CAPN3-genotype effects. Instance observations also
 have an image random intercept.
 
+CAPN3-subtype deviations use a non-centered weighted K−1 hierarchy. For each
+site scenario, the observed CAPN3 patient proportions define a weighted
+sum-to-zero contrast space. Unit-normal `subtype_offset` values are mapped
+through an orthonormal basis for that space and scaled by `sigma_subtype`.
+Consequently, `beta_disease` remains the weighted average CAPN3-versus-CTRL
+effect, while `subtype_deviation` and all existing subtype summary columns keep
+their biological interpretation. Traces created by the previous centered,
+K-dimensional `subtype_raw` model are not parameterization-compatible and must
+be refit before drawing final subtype conclusions.
+
 Validate every enabled instance fit and all site scenarios without sampling:
 
 ```bash
