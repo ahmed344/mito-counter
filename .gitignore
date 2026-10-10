@@ -4,6 +4,8 @@ qp-projects/
 training_data/
 training_samples/
 models/
+article/
+thesis_draft/
 
 # Images
 *.png

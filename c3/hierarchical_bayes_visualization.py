@@ -663,27 +663,31 @@ def summary_text_or_empty(value: Any) -> str:
     return text
 
 
-def superplot_title_text(row: pd.Series) -> str:
+def superplot_title_text(row: pd.Series, include_mean: bool = True) -> str:
     """Build the superplot title including posterior and Bayes-factor summaries.
 
     Args:
         row (pd.Series): Summary row describing one muscle-metric fit.
+        include_mean (bool): If True, include mean posterior and Bayes-factor
+            summary lines in addition to the median lines.
 
     Returns:
         str: Multi-line title text for the superplot figure.
     """
 
     title_lines = [fit_title(row)]
-    delta_mean_summary = summary_text_or_empty(row.get("delta_mean_summary", ""))
+    if include_mean:
+        delta_mean_summary = summary_text_or_empty(row.get("delta_mean_summary", ""))
+        if delta_mean_summary:
+            title_lines.append(delta_mean_summary)
     delta_median_summary = summary_text_or_empty(row.get("delta_median_summary", ""))
-    mean_bf_summary = summary_text_or_empty(row.get("delta_mean_bf_summary", ""))
-    median_bf_summary = summary_text_or_empty(row.get("delta_median_bf_summary", ""))
-    if delta_mean_summary:
-        title_lines.append(delta_mean_summary)
     if delta_median_summary:
         title_lines.append(delta_median_summary)
-    if mean_bf_summary:
-        title_lines.append(f"mean {mean_bf_summary}")
+    if include_mean:
+        mean_bf_summary = summary_text_or_empty(row.get("delta_mean_bf_summary", ""))
+        if mean_bf_summary:
+            title_lines.append(f"mean {mean_bf_summary}")
+    median_bf_summary = summary_text_or_empty(row.get("delta_median_bf_summary", ""))
     if median_bf_summary:
         title_lines.append(f"median {median_bf_summary}")
     return "\n".join(title_lines)
@@ -1468,14 +1472,14 @@ def bayesian_superplot_annotations(
     row: pd.Series,
     annotation_mode: str = BAYES_FACTOR_ANNOTATION_MODE,
 ) -> list[dict[str, str]]:
-    """Build colored mean and median BF annotations for Bayesian super violins.
+    """Build colored median annotations for Bayesian super violins.
 
     Args:
         row (pd.Series): Summary row describing one muscle-metric fit.
         annotation_mode (str): Superplot annotation system to use.
 
     Returns:
-        list[dict[str, str]]: Annotation records with mean below median for one fit.
+        list[dict[str, str]]: Annotation records with median labels for one fit.
     """
 
     base_record = {
@@ -1484,30 +1488,18 @@ def bayesian_superplot_annotations(
         "hue_end": str(row["ko_label"]),
     }
     if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE:
-        mean_label = format_delta_effect_annotation(row=row, label="delta_mean")
         median_label = format_delta_effect_annotation(row=row, label="delta_median")
     else:
-        mean_label = summary_text_or_empty(row.get("delta_mean_bf_annotation", ""))
         median_label = summary_text_or_empty(row.get("delta_median_bf_annotation", ""))
-    if not mean_label and not median_label:
+    if not median_label:
         return []
     return [
         {
             **base_record,
-            "mean_label": (
-                mean_label
-                if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE
-                else f"mean {mean_label}"
-                if mean_label
-                else ""
-            ),
-            "mean_color": BAYES_MEAN_ANNOTATION_COLOR,
             "median_label": (
                 median_label
                 if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE
                 else f"median {median_label}"
-                if median_label
-                else ""
             ),
             "median_color": BAYES_MEDIAN_ANNOTATION_COLOR,
         }
@@ -1582,7 +1574,7 @@ def plot_bayesian_superplots(
     """
 
     subset = measurements_df.loc[measurements_df["Muscle"] == row["muscle"]].copy()
-    title_text = superplot_title_text(row)
+    title_text = superplot_title_text(row, include_mean=False)
     fit_dir = output_dir
     annotation_records = bayesian_superplot_annotations(row=row, annotation_mode=annotation_mode)
     plot_super_violin(

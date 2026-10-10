@@ -16,7 +16,7 @@ runtime:
   save_idata: true
   summary_update_mode: "merge"
   visualization_refresh_mode: "rerun_missing_traces"
-  superplot_annotation_mode: "effect_summary"
+  superplot_annotation_mode: "effect_summary" # Superplots show the median annotation only.
   retry_on_warnings: false
   retry_max_draws: 10000
   retry_max_tune: 10000

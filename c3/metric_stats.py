@@ -109,7 +109,6 @@ bayesian_image_summary_csv = _DATA_RESULTS / "hierarchical_bayes_statistics_imag
 _c3_dir = Path(__file__).resolve().parent
 bayesian_config_yaml = _c3_dir / "hierarchical_bayes_config.yaml"
 bayesian_image_summary_config_yaml = _c3_dir / "hierarchical_bayes_image_summary_config.yaml"
-BAYES_MEAN_ANNOTATION_COLOR = "purple"
 BAYES_MEDIAN_ANNOTATION_COLOR = "tab:blue"
 BAYES_FACTOR_ANNOTATION_MODE = "bayes_factor"
 EFFECT_SUMMARY_ANNOTATION_MODE = "effect_summary"
@@ -200,7 +199,7 @@ def format_delta_effect_annotation(row, label):
 
 
 def bayesian_annotations_for_metric(summary_df, metric, annotation_mode=BAYES_FACTOR_ANNOTATION_MODE):
-    """Build per-muscle BF annotation records for one metric.
+    """Build per-muscle median annotation records for one metric.
 
     Args:
         summary_df (pd.DataFrame): Bayesian summary table loaded from disk.
@@ -217,36 +216,22 @@ def bayesian_annotations_for_metric(summary_df, metric, annotation_mode=BAYES_FA
     annotations = []
     for _, row in metric_rows.iterrows():
         if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE:
-            mean_label = format_delta_effect_annotation(row=row, label="delta_mean")
             median_label = format_delta_effect_annotation(row=row, label="delta_median")
         else:
-            mean_label = str(row.get("delta_mean_bf_annotation", "")).strip()
-            if mean_label.lower() == "nan":
-                mean_label = ""
             median_label = str(row.get("delta_median_bf_annotation", "")).strip()
             if median_label.lower() == "nan":
                 median_label = ""
-        if not mean_label and not median_label:
+        if not median_label:
             continue
         annotations.append(
             {
                 "x": str(row["muscle"]),
                 "hue_start": str(row["wt_label"]),
                 "hue_end": str(row["ko_label"]),
-                "mean_label": (
-                    mean_label
-                    if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE
-                    else f"mean {mean_label}"
-                    if mean_label
-                    else ""
-                ),
-                "mean_color": BAYES_MEAN_ANNOTATION_COLOR,
                 "median_label": (
                     median_label
                     if annotation_mode == EFFECT_SUMMARY_ANNOTATION_MODE
                     else f"median {median_label}"
-                    if median_label
-                    else ""
                 ),
                 "median_color": BAYES_MEDIAN_ANNOTATION_COLOR,
             }

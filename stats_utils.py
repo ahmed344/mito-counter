@@ -18,8 +18,9 @@ SUPERPLOT_POINT_SIZE_MAX = 28
 SUPERPLOT_POINT_ALPHA = 0.4
 ROBUST_Y_LOWER_QUANTILE = 0.01
 ROBUST_Y_UPPER_QUANTILE = 0.99
-SUPERPLOT_TITLE_PAD = 54
-SUPERPLOT_LAYOUT_TOP = 0.92
+SUPERPLOT_TITLE_FONT_SIZE = 14
+SUPERPLOT_TITLE_ANNOTATION_GAP = 0.03
+SUPERPLOT_ANNOTATION_TEXT_HEIGHT = 0.03
 SUPERPLOT_LEGEND_FONT_SIZE = 8
 SUPERPLOT_LEGEND_MARKERS_SCALE = 0.75
 SUPERPLOT_LEGEND_WIDTH_FRACTION = 0.17
@@ -51,6 +52,32 @@ def maybe_show_current_figure():
     return None
 
 
+C3_WT_PREFERRED_BLOCKS = ("1", "2", "3")
+C3_KO_PREFERRED_BLOCKS = ("6", "7", "8")
+
+
+def condition_sort_key(value):
+    """Return a sort key that keeps WT-like labels before KO-like labels.
+
+    Args:
+        value (str): Condition label extracted from the dataset.
+
+    Returns:
+        tuple[int, str]: Group rank followed by the lowercased label.
+    """
+    normalized = str(value).strip().lower()
+    if "wildtype" in normalized or normalized == "wt" or normalized.endswith("_wt"):
+        return (0, normalized)
+    if (
+        "knockout" in normalized
+        or normalized == "ko"
+        or normalized.endswith("_ko")
+        or "ko-c3" in normalized.replace("_", "-")
+    ):
+        return (1, normalized)
+    return (2, normalized)
+
+
 def sort_condition_values(values):
     """Sort condition labels with WT-like labels before KO-like labels.
 
@@ -60,25 +87,23 @@ def sort_condition_values(values):
     Returns:
         list[str]: Sorted condition labels using a WT/KO-aware ordering.
     """
-    return sorted(
-        values,
-        key=lambda v: (
-            0
-            if (
-                "wildtype" in str(v).lower()
-                or str(v).strip().lower() == "wt"
-                or str(v).strip().lower().endswith("_wt")
-            )
-            else 1
-            if (
-                "knockout" in str(v).lower()
-                or str(v).strip().lower() == "ko"
-                or str(v).strip().lower().endswith("_ko")
-            )
-            else 2,
-            str(v).lower(),
-        ),
-    )
+    return sorted(values, key=condition_sort_key)
+
+
+def block_numeric_sort_key(value):
+    """Return a numeric-then-lexical sort key for one block label.
+
+    Args:
+        value (str): Block / animal identifier.
+
+    Returns:
+        tuple[int, int | str]: Integer rank when the label is numeric, otherwise lexical.
+    """
+    text = str(value)
+    try:
+        return (0, int(text))
+    except ValueError:
+        return (1, text)
 
 
 def sort_block_values(values):
@@ -90,11 +115,80 @@ def sort_block_values(values):
     Returns:
         list[str]: Sorted block labels converted to strings.
     """
-    normalized_values = [str(value) for value in values]
-    try:
-        return sorted(normalized_values, key=lambda value: (0, int(value)))
-    except ValueError:
-        return sorted(normalized_values, key=lambda value: (1, value))
+    return sorted((str(value) for value in values), key=block_numeric_sort_key)
+
+
+def is_c3_superplot_dataset(conditions):
+    """Return whether condition labels belong to the Calpain-3 mouse study.
+
+    Args:
+        conditions (list[str]): Unique condition labels from the plotting dataframe.
+
+    Returns:
+        bool: ``True`` when labels include Calpain-3 knockout or KO-C3 naming.
+    """
+    for value in conditions:
+        normalized = str(value).strip().lower().replace("_", "-")
+        if "calpain" in normalized or "ko-c3" in normalized:
+            return True
+    return False
+
+
+def preferred_c3_block_rank(condition, block_label):
+    """Return a rank that pins selected C3 animal IDs before other blocks.
+
+    WT animals ``1``, ``2``, and ``3`` come before remaining WT animals. KO-C3
+    animals ``6``, ``7``, and ``8`` come before remaining KO-C3 animals.
+
+    Args:
+        condition (str): Condition label associated with the block.
+        block_label (str): Block / animal identifier.
+
+    Returns:
+        int: ``0`` for preferred IDs within that condition, ``1`` otherwise.
+    """
+    condition_rank, _normalized = condition_sort_key(condition)
+    if condition_rank == 0:
+        preferred = C3_WT_PREFERRED_BLOCKS
+    elif condition_rank == 1:
+        preferred = C3_KO_PREFERRED_BLOCKS
+    else:
+        preferred = ()
+    return 0 if str(block_label) in preferred else 1
+
+
+def sort_c3_superplot_block_values(plot_data, block, hue, values):
+    """Sort C3 blocks as WT 1-3, remaining WT, KO-C3 6-8, then remaining KO.
+
+    Args:
+        plot_data (pd.DataFrame): Plotting dataframe containing block and hue columns.
+        block (str): Column name identifying replicate blocks.
+        hue (str): Column name identifying the condition for each block.
+        values (list[object]): Block labels to order.
+
+    Returns:
+        list[str]: Block labels ordered for C3 superplot stripes and legends.
+    """
+    unique_values = list(dict.fromkeys(str(value) for value in values))
+    if not unique_values:
+        return []
+
+    pairs = plot_data[[block, hue]].dropna().astype(str).drop_duplicates()
+    block_to_condition = {}
+    for block_label, condition in zip(pairs[block].tolist(), pairs[hue].tolist()):
+        existing = block_to_condition.get(str(block_label))
+        if existing is None or condition_sort_key(condition) < condition_sort_key(existing):
+            block_to_condition[str(block_label)] = str(condition)
+
+    def sort_key(block_label):
+        condition = block_to_condition.get(str(block_label), "")
+        return (
+            condition_sort_key(condition),
+            preferred_c3_block_rank(condition, block_label),
+            block_numeric_sort_key(block_label),
+        )
+
+    return sorted(unique_values, key=sort_key)
 
 
 def metric_uses_center_region(metric_name):
@@ -172,6 +266,8 @@ def get_category_orders(plot_data, x, hue, block=None):
 
     Returns:
         tuple[list[str], list[str], list[str]]: Orders for x, hue, and block.
+            Calpain-3 mouse superplots order blocks as WT 1-3, remaining WT,
+            KO-C3 6-8, then remaining KO.
     """
     x_order = sorted(plot_data[x].astype(str).unique())
     if hue == "Condition":
@@ -181,7 +277,16 @@ def get_category_orders(plot_data, x, hue, block=None):
 
     block_order = []
     if block is not None and block in plot_data.columns:
-        block_order = sort_block_values(plot_data[block].dropna().unique().tolist())
+        unique_blocks = plot_data[block].dropna().astype(str).unique().tolist()
+        if is_c3_superplot_dataset(plot_data[hue].dropna().astype(str).unique().tolist()):
+            block_order = sort_c3_superplot_block_values(
+                plot_data=plot_data,
+                block=block,
+                hue=hue,
+                values=unique_blocks,
+            )
+        else:
+            block_order = sort_block_values(unique_blocks)
 
     return x_order, hue_order, block_order
 
@@ -492,49 +597,58 @@ def get_dynamic_beeswarm_point_size(group_count, max_group_count, metric_name):
     return float(np.clip(marker_size, point_size_min, point_size_max))
 
 
-def add_superplot_summary(ax, group_data, y, block, center, block_palette):
-    """Overlay block means and mean-plus-SEM summary markers on a superplot.
+def interpolate_stripe_center_x(y_grid, left_edge, right_edge, y_value):
+    """Return the horizontal midpoint of one violin stripe at a y-value.
 
     Args:
-        ax (plt.Axes): Matplotlib axes receiving the summary overlay.
-        group_data (pd.DataFrame): Data for a single x/hue category.
-        y (str): Column name used as the numeric response variable.
-        block (str): Column name identifying replicate blocks.
-        center (float): Horizontal center of the current group.
-        block_palette (dict[str, tuple[float, float, float]]): Mapping from block label to color.
+        y_grid (np.ndarray): Density evaluation coordinates.
+        left_edge (np.ndarray): Left x-coordinates of the stripe on ``y_grid``.
+        right_edge (np.ndarray): Right x-coordinates of the stripe on ``y_grid``.
+        y_value (float): Vertical position of the mean marker.
+
+    Returns:
+        float: X-coordinate at the stripe center.
+    """
+    left_x = float(np.interp(y_value, y_grid, left_edge))
+    right_x = float(np.interp(y_value, y_grid, right_edge))
+    return (left_x + right_x) / 2.0
+
+
+def add_superplot_mean_markers(ax, center, means, colors, x_positions):
+    """Draw ordered mean diamonds and the overall mean +/- SEM.
+
+    Args:
+        ax (plt.Axes): Axes receiving markers.
+        center (float): X-position of the overall mean marker.
+        means (list[float]): Per-block means aligned with ``colors`` and ``x_positions``.
+        colors (list[object]): Diamond colors aligned with ``means``.
+        x_positions (list[float]): Diamond x-positions aligned with ``means``.
 
     Returns:
         None: The function adds artists directly to ``ax``.
     """
-    block_means = []
-    available_blocks = sorted(group_data[block].astype(str).unique(), key=lambda value: (value not in block_palette, value))
-    if len(available_blocks) == 1:
-        offsets = [0.0]
-    else:
-        offsets = np.linspace(-0.09, 0.09, len(available_blocks))
-
-    for block_label, offset in zip(available_blocks, offsets):
-        block_values = group_data.loc[group_data[block].astype(str) == block_label, y].dropna().to_numpy()
-        if block_values.size == 0:
-            continue
-        block_mean = float(np.mean(block_values))
-        block_means.append(block_mean)
+    plotted_means = []
+    for mean_value, color, x_position in zip(means, colors, x_positions):
+        plotted_means.append(float(mean_value))
         ax.scatter(
-            center + float(offset),
-            block_mean,
+            float(x_position),
+            float(mean_value),
             s=36,
             marker="D",
-            color=block_palette.get(block_label, "0.4"),
+            color=color,
             edgecolor="black",
             linewidth=0.5,
             zorder=6,
         )
-
-    if not block_means:
+    if not plotted_means:
         return None
 
-    overall_mean = float(np.mean(block_means))
-    sem = float(np.std(block_means, ddof=1) / np.sqrt(len(block_means))) if len(block_means) > 1 else 0.0
+    overall_mean = float(np.mean(plotted_means))
+    sem = (
+        float(np.std(plotted_means, ddof=1) / np.sqrt(len(plotted_means)))
+        if len(plotted_means) > 1
+        else 0.0
+    )
     ax.errorbar(
         center,
         overall_mean,
@@ -545,6 +659,63 @@ def add_superplot_summary(ax, group_data, y, block, center, block_palette):
         capsize=4,
         linewidth=1.4,
         zorder=7,
+    )
+    return None
+
+
+def add_superplot_summary(ax, group_data, y, block, center, block_palette, block_order=None):
+    """Overlay block means and mean-plus-SEM summary markers on a superplot.
+
+    Diamonds are placed left to right in ``block_order`` when provided, otherwise
+    in palette-then-identifier order matching the plotted subviolins.
+
+    Args:
+        ax (plt.Axes): Matplotlib axes receiving the summary overlay.
+        group_data (pd.DataFrame): Data for a single x/hue category.
+        y (str): Column name used as the numeric response variable.
+        block (str): Column name identifying replicate blocks.
+        center (float): Horizontal center of the current group.
+        block_palette (dict[str, tuple[float, float, float]]): Mapping from block label to color.
+        block_order (list[str] | None): Optional block order matching plotted stripes.
+
+    Returns:
+        None: The function adds artists directly to ``ax``.
+    """
+    present = {str(value) for value in group_data[block].astype(str).unique()}
+    if block_order is None:
+        palette_rank = {label: index for index, label in enumerate(block_palette)}
+        available_blocks = sorted(
+            present,
+            key=lambda value: (
+                palette_rank.get(value, len(palette_rank)),
+                block_numeric_sort_key(value),
+            ),
+        )
+    else:
+        available_blocks = [str(label) for label in block_order if str(label) in present]
+        seen = set(available_blocks)
+        available_blocks.extend(
+            label for label in sorted(present, key=block_numeric_sort_key) if label not in seen
+        )
+
+    means = []
+    colors = []
+    for block_label in available_blocks:
+        block_values = group_data.loc[group_data[block].astype(str) == block_label, y].dropna().to_numpy()
+        if block_values.size == 0:
+            continue
+        means.append(float(np.mean(block_values)))
+        colors.append(block_palette.get(block_label, "0.4"))
+    if not means:
+        return None
+
+    offsets = [0.0] if len(means) == 1 else np.linspace(-0.09, 0.09, len(means))
+    add_superplot_mean_markers(
+        ax=ax,
+        center=center,
+        means=means,
+        colors=colors,
+        x_positions=[center + float(offset) for offset in offsets],
     )
     return None
 
@@ -716,13 +887,14 @@ def add_superplot_annotations(ax, annotation_records, group_centers, hue_order):
         hue_order (list[str]): Ordered hue labels used to choose paired conditions.
 
     Returns:
-        None: The function adds bracket and text artists directly to ``ax``.
+        float: Highest annotation y-position in axis-transform coordinates.
     """
     if len(hue_order) < 2 or not annotation_records:
-        return None
+        return 1.0
 
     xaxis_transform = ax.get_xaxis_transform()
     annotation_counts_by_x = {}
+    max_top = 1.0
 
     for record in annotation_records:
         x_value = str(record.get("x", ""))
@@ -767,7 +939,110 @@ def add_superplot_annotations(ax, annotation_records, group_centers, hue_order):
                 text_color=text_color,
                 transform=xaxis_transform,
             )
+        max_top = max(
+            max_top,
+            y_text
+            + SUPERPLOT_ANNOTATION_TEXT_LINE_GAP * max(len(text_items) - 1, 0)
+            + SUPERPLOT_ANNOTATION_TEXT_HEIGHT,
+        )
 
+    return max_top
+
+
+def superplot_top_margin(annotation_top, title=""):
+    """Return a tight-layout top rect that leaves room for annotations and title.
+
+    Args:
+        annotation_top (float): Highest annotation y in axis-transform coordinates.
+        title (str): Figure title used to reserve additional headroom for title lines.
+
+    Returns:
+        float: ``tight_layout`` top rect value.
+    """
+    overflow = max(0.0, float(annotation_top) - 1.0)
+    title_text = str(title).strip()
+    title_lines = title_text.count("\n") + 1 if title_text else 0
+    title_space = 0.028 * title_lines if title_lines else 0.0
+    return max(0.86, 0.99 - title_space - 0.12 * overflow)
+
+
+def superplot_drawn_annotation_top(ax):
+    """Return the highest overflowing artist top in axes coordinates.
+
+    Args:
+        ax (plt.Axes): Axes containing the finished superplot artists.
+
+    Returns:
+        float: Highest y-position in axes coordinates, at least ``1.0``.
+    """
+    figure = ax.figure
+    figure.canvas.draw()
+    renderer = figure.canvas.get_renderer()
+    axes_bbox = ax.get_window_extent(renderer=renderer)
+    if axes_bbox.height <= 0:
+        return 1.0
+    max_top = 1.0
+    legend = ax.get_legend()
+    for artist in ax.get_children():
+        if legend is not None and artist is legend:
+            continue
+        bbox = None
+        try:
+            bbox = artist.get_tightbbox(renderer=renderer)
+        except (AttributeError, TypeError, RuntimeError, ValueError):
+            try:
+                bbox = artist.get_window_extent(renderer=renderer)
+            except (AttributeError, TypeError, RuntimeError, ValueError):
+                bbox = None
+        if bbox is None or (bbox.width == 0 and bbox.height == 0):
+            continue
+        max_top = max(max_top, (bbox.ymax - axes_bbox.ymin) / axes_bbox.height)
+    return float(max_top)
+
+
+def superplot_title_y(ax, annotation_top):
+    """Return a figure-coordinate y that places the title just above annotations.
+
+    ``SUPERPLOT_TITLE_ANNOTATION_GAP`` is in figure coordinates and is added above
+    the measured annotation top.
+
+    Args:
+        ax (plt.Axes): Laid-out axes whose position maps annotation coordinates.
+        annotation_top (float): Highest annotation y in axis-transform coordinates.
+
+    Returns:
+        float: ``suptitle`` y-value in figure coordinates.
+    """
+    position = ax.get_position()
+    annotation_fig_y = float(position.y0) + float(annotation_top) * float(position.height)
+    return annotation_fig_y + SUPERPLOT_TITLE_ANNOTATION_GAP
+
+
+def place_superplot_title(ax, title, annotation_top):
+    """Draw the superplot title immediately above the annotation stack.
+
+    Args:
+        ax (plt.Axes): Axes that already contain the superplot and annotations.
+        title (str): Title text.
+        annotation_top (float): Estimated highest annotation y in axis-transform coordinates.
+
+    Returns:
+        None: The function adds a figure-level title.
+    """
+    if not str(title).strip():
+        return None
+    drawn_top = superplot_drawn_annotation_top(ax=ax)
+    title_top = drawn_top if drawn_top > 1.0 else float(annotation_top)
+    position = ax.get_position()
+    title_x = float(position.x0 + position.x1) / 2.0
+    ax.figure.suptitle(
+        title,
+        x=title_x,
+        y=superplot_title_y(ax=ax, annotation_top=title_top),
+        ha="center",
+        va="bottom",
+        fontsize=SUPERPLOT_TITLE_FONT_SIZE,
+    )
     return None
 
 
@@ -815,10 +1090,10 @@ def finalize_superplot(
     ax.set_xticklabels(tick_labels, rotation=0, ha="center")
     ax.set_xlabel(x, fontsize=12)
     ax.set_ylabel(f"{y}{format_unit_label(y, unit_dict)}", fontsize=12)
-    ax.set_title(title, fontsize=14, pad=SUPERPLOT_TITLE_PAD)
     apply_robust_y_limits(ax=ax, values=y_values)
+    annotation_top = 1.0
     if annotation_records and group_centers is not None and hue_order is not None:
-        add_superplot_annotations(
+        annotation_top = add_superplot_annotations(
             ax=ax,
             annotation_records=annotation_records,
             group_centers=group_centers,
@@ -826,7 +1101,7 @@ def finalize_superplot(
         )
     ax.grid(axis="y", alpha=0.22, linestyle="--")
     sns.despine(ax=ax)
-    plt.tight_layout(rect=(0.0, 0.0, 1.0, SUPERPLOT_LAYOUT_TOP))
+    plt.tight_layout(rect=(0.0, 0.0, 1.0, superplot_top_margin(annotation_top, title)))
     if block_palette:
         handles = [
             plt.Line2D(
@@ -855,6 +1130,7 @@ def finalize_superplot(
             borderaxespad=0.0,
         )
 
+    place_superplot_title(ax=ax, title=title, annotation_top=annotation_top)
     if output_path is not None:
         plt.savefig(output_path, dpi=300, bbox_inches="tight", pad_inches=0.02)
     maybe_show_current_figure()
@@ -1057,6 +1333,9 @@ def plot_super_violin(
         right_edge = center + half_width
         current_left = left_edge.copy()
         full_width = right_edge - left_edge
+        stripe_means = []
+        stripe_colors = []
+        stripe_x_positions = []
 
         for block_label, block_density in zip(stripe_blocks, density_matrix):
             density_fraction = np.divide(
@@ -1075,6 +1354,22 @@ def plot_super_violin(
                 linewidth=0,
                 zorder=2,
             )
+            block_values = group_data.loc[
+                group_data[block].astype(str) == str(block_label),
+                y,
+            ].dropna().to_numpy(dtype=float)
+            if block_values.size > 0:
+                mean_y = float(np.mean(block_values))
+                stripe_means.append(mean_y)
+                stripe_colors.append(block_palette[block_label])
+                stripe_x_positions.append(
+                    interpolate_stripe_center_x(
+                        y_grid=y_grid,
+                        left_edge=current_left,
+                        right_edge=stripe_right,
+                        y_value=mean_y,
+                    )
+                )
             if block_label != stripe_blocks[-1]:
                 ax.plot(
                     stripe_right,
@@ -1087,13 +1382,12 @@ def plot_super_violin(
 
         ax.plot(left_edge, y_grid, color="black", linewidth=SUPERVIOLIN_OUTLINE_LINEWIDTH, zorder=3)
         ax.plot(right_edge, y_grid, color="black", linewidth=SUPERVIOLIN_OUTLINE_LINEWIDTH, zorder=3)
-        add_superplot_summary(
+        add_superplot_mean_markers(
             ax=ax,
-            group_data=group_data,
-            y=y,
-            block=block,
             center=center,
-            block_palette=block_palette,
+            means=stripe_means,
+            colors=stripe_colors,
+            x_positions=stripe_x_positions,
         )
         tick_positions.append(center)
         tick_labels.append(f"{x_value}\n{hue_value}")
@@ -1264,6 +1558,7 @@ def plot_super_beeswarm(
             block=block,
             center=center,
             block_palette=block_palette,
+            block_order=block_order,
         )
         tick_positions.append(center)
         tick_labels.append(f"{x_value}\n{hue_value}")

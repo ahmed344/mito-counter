@@ -16,7 +16,7 @@ runtime:
   save_idata: true # Boolean. `true` saves NetCDF traces for later visualization; `false` skips trace writing.
   summary_update_mode: "merge" # Options: `merge` updates only rerun muscle/metric rows; `replace` overwrites the full summary CSV.
   visualization_refresh_mode: "rerun_missing_traces" # Options: `never`, `refit_first`, `rerun_missing_traces`.
-  superplot_annotation_mode: "effect_summary" # Options: `bayes_factor` for compact BF symbols, `effect_summary` for delta [HDI] pd labels.
+  superplot_annotation_mode: "effect_summary" # Options: `bayes_factor` for compact BF symbols, `effect_summary` for delta [HDI] pd labels. Superplots show the median annotation only.
   retry_on_warnings: false # Boolean. `true` retries fits with sampler warnings; `false` keeps the first attempt even with divergences.
   retry_max_draws: 10000 # Integer >= 1. Upper cap for adaptive retry posterior draws per chain.
   retry_max_tune: 10000 # Integer >= 1. Upper cap for adaptive retry warmup draws per chain.
