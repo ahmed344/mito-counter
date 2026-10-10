@@ -6,10 +6,10 @@ enabled: true
 analysis_id: "instance"
 
 paths:
-  input_csv: "/workspaces/mito-counter/data/DMD_1X/results/measurements_cleaned.csv"
-  summary_csv: "/workspaces/mito-counter/data/DMD_1X/results/hierarchical_bayes_statistics.csv"
-  trace_dir: "/workspaces/mito-counter/data/DMD_1X/results/bayes_traces"
-  figure_root: "/workspaces/mito-counter/data/DMD_1X/results/figures/bayesian"
+  input_csv: "/workspaces/mito-counter/data/HDD/Data/DMD_1X/results/measurements_cleaned.csv"
+  summary_csv: "/workspaces/mito-counter/data/HDD/Data/DMD_1X/results/hierarchical_bayes_statistics.csv"
+  trace_dir: "/workspaces/mito-counter/data/HDD/Data/DMD_1X/results/bayes_traces"
+  figure_root: "/workspaces/mito-counter/data/HDD/Data/DMD_1X/results/figures/bayesian"
 
 runtime:
   cores: 20

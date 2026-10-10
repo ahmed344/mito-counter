@@ -6,11 +6,11 @@ analysis_id: "cell_summary"
 
 paths:
   input_csvs:
-    - "/workspaces/mito-counter/data/DMD/results/measurments_cleaned_ss_summary.csv"
-    - "/workspaces/mito-counter/data/DMD/results/measurments_cleaned_imf_summary.csv"
-  summary_csv: "/workspaces/mito-counter/data/DMD/results/hierarchical_bayes_statistics_cell_summary.csv"
-  trace_dir: "/workspaces/mito-counter/data/DMD/results/bayes_traces_cell_summary"
-  figure_root: "/workspaces/mito-counter/data/DMD/results/figures/bayesian_cell_summary"
+    - "/workspaces/mito-counter/data/HDD/Data/DMD/results/measurments_cleaned_ss_summary.csv"
+    - "/workspaces/mito-counter/data/HDD/Data/DMD/results/measurments_cleaned_imf_summary.csv"
+  summary_csv: "/workspaces/mito-counter/data/HDD/Data/DMD/results/hierarchical_bayes_statistics_cell_summary.csv"
+  trace_dir: "/workspaces/mito-counter/data/HDD/Data/DMD/results/bayes_traces_cell_summary"
+  figure_root: "/workspaces/mito-counter/data/HDD/Data/DMD/results/figures/bayesian_cell_summary"
 
 runtime:
   cores: 20

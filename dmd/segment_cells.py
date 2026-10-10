@@ -13,7 +13,7 @@ SegmentationMeta = dict[str, float | str | bool]
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT_ROOT = REPO_ROOT / "data" / "DMD" / "Processed"
+DEFAULT_INPUT_ROOT = REPO_ROOT / "data" / "HDD" / "Data" / "DMD" / "Processed"
 EXCLUDED_STEM_SUFFIXES = (
     "_corrected",
     "_segmented",

@@ -14,8 +14,8 @@ import numpy as np
 import tifffile as tif
 
 
-DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/DMD_1X/RAW"
-DEFAULT_OUTPUT_ROOT = "/workspaces/mito-counter/data/DMD_1X/Processed"
+DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/HDD/Data/DMD_1X/RAW"
+DEFAULT_OUTPUT_ROOT = "/workspaces/mito-counter/data/HDD/Data/DMD_1X/Processed"
 DEFAULT_MAGNIFICATION_TOKEN: str | None = None
 GROUP_DIR_RE = re.compile(r"\s*(TA|EOM)\s*[_-]\s*(WT|DMD)\s*", re.IGNORECASE)
 COMPARTMENT_DIR_RE = re.compile(r"\s*(IMF|SS)\s*[_-]\s*([0-9]+)\s*", re.IGNORECASE)

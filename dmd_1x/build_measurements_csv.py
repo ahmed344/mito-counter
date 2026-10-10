@@ -37,8 +37,8 @@ from dmd.build_measurements_csv import (  # noqa: E402
     sum_or_none,
 )
 
-INPUT_ROOT = REPO_ROOT / "data" / "DMD_1X" / "Processed"
-RESULTS_ROOT = REPO_ROOT / "data" / "DMD_1X" / "results"
+INPUT_ROOT = REPO_ROOT / "data" / "HDD" / "Data" / "DMD_1X" / "Processed"
+RESULTS_ROOT = REPO_ROOT / "data" / "HDD" / "Data" / "DMD_1X" / "results"
 OUTPUT_CSV = RESULTS_ROOT / "measurements.csv"
 OUTPUT_CLEANED_CSV = RESULTS_ROOT / "measurements_cleaned.csv"
 OUTPUT_SS_SUMMARY_CSV = RESULTS_ROOT / "measurements_cleaned_ss_summary.csv"
@@ -797,7 +797,7 @@ def main() -> None:
         None: This function does not accept arguments.
 
     Returns:
-        None: Writes CSV files to ``data/DMD_1X/results`` and prints a summary.
+        None: Writes CSV files to ``data/HDD/Data/DMD_1X/results`` and prints a summary.
     """
     if not INPUT_ROOT.is_dir():
         raise FileNotFoundError(f"Input root not found: {INPUT_ROOT}")

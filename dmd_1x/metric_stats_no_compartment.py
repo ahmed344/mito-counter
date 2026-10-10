@@ -22,7 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from dmd_1x import stats_utils as dmd_stats_utils
 
-RESULTS_DIR = REPO_ROOT / "data" / "DMD_1X" / "results"
+RESULTS_DIR = REPO_ROOT / "data" / "HDD" / "Data" / "DMD_1X" / "results"
 INSTANCE_INPUT_CSV = RESULTS_DIR / "measurements_cleaned_no_compartment.csv"
 IMAGE_SUMMARY_INPUT_CSV = RESULTS_DIR / "measurements_cleaned_no_compartment_summary.csv"
 INSTANCE_FIGURES_DIR = RESULTS_DIR / "figures_instance_no_compartment"
@@ -690,7 +690,7 @@ def main() -> None:
         None: Reads fixed DMD_1X result paths from module constants.
 
     Returns:
-        None: Writes CSV and figure outputs under ``data/DMD_1X/results``.
+        None: Writes CSV and figure outputs under ``data/HDD/Data/DMD_1X/results``.
     """
 
     units = metric_units()

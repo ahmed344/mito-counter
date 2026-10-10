@@ -9,7 +9,7 @@ filenames while leaving masks untouched, run:
 ```
 python /workspaces/mito-counter/recut_tiles.py \
   --training-root /workspaces/mito-counter/training_data \
-  --source-root /workspaces/mito-counter/data/Calpaine_3/Processed
+  --source-root /workspaces/mito-counter/data/HDD/Data/Calpaine_3/Processed
 ```
 
 ## Empanada napari troubleshooting

@@ -33,7 +33,7 @@ from stats_utils import filter_metric_region, maybe_show_current_figure, plot_me
 sns.set_style("whitegrid")
 # %% Load and prepare input data
 # Read per-object morphological measurements exported by the pipeline.
-_DATA_RESULTS = _REPO_ROOT / "data" / "Calpaine_3" / "results"
+_DATA_RESULTS = _REPO_ROOT / "data" / "HDD" / "Data" / "Calpaine_3" / "results"
 df = pd.read_csv(_DATA_RESULTS / "measurments_cleaned.csv")
 df_image_summary = pd.read_csv(_DATA_RESULTS / "measurments_cleaned_image_summary.csv")
 excluded_measurements = {"Connected_parts", "Image_Region"}

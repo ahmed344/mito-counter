@@ -2,10 +2,10 @@
 
 This pipeline processes the 4800X electron-microscopy images in:
 
-- `data/Calpaine_3_patients/RAW/CAPN3/*/DATA QUANTIFICATION - IMF`
-- `data/Calpaine_3_patients/RAW/CAPN3/*/DATA QUANTIFICATION - SS`
-- `data/Calpaine_3_patients/RAW/CTRL/*/DATA QUANTIFICATION - IMF`
-- `data/Calpaine_3_patients/RAW/CTRL/*/DATA QUANTIFICATION - SS`
+- `data/HDD/Data/Calpaine_3_patients/RAW/CAPN3/*/DATA QUANTIFICATION - IMF`
+- `data/HDD/Data/Calpaine_3_patients/RAW/CAPN3/*/DATA QUANTIFICATION - SS`
+- `data/HDD/Data/Calpaine_3_patients/RAW/CTRL/*/DATA QUANTIFICATION - IMF`
+- `data/HDD/Data/Calpaine_3_patients/RAW/CTRL/*/DATA QUANTIFICATION - SS`
 
 It deliberately excludes `ME DATA` and image-preview directories. Run commands
 from the repository root (`/workspaces/mito-counter`) in the devcontainer base
@@ -30,7 +30,7 @@ python c3_patients/dm3_to_tiff.py
 
 The default `4800X` filter can be overridden with
 `--magnification-token TOKEN`. Outputs are written below
-`data/Calpaine_3_patients/Processed/<condition>/<identifier>/<compartment>/`.
+`data/HDD/Data/Calpaine_3_patients/Processed/<condition>/<identifier>/<compartment>/`.
 Review the final metadata-alignment report. Patients listed in the clinical
 CSVs but lacking image folders are reported and do not create output rows.
 
@@ -117,7 +117,7 @@ python c3_patients/build_segmentation_overlay_qc.py
 
 Existing overlays are skipped. Use `--overwrite` to regenerate them. Outputs
 mirror the processed directory tree below
-`data/Calpaine_3_patients/results/overlay_qc/`. Inspect examples from CAPN3 and
+`data/HDD/Data/Calpaine_3_patients/results/overlay_qc/`. Inspect examples from CAPN3 and
 CTRL, IMF and SS, and multiple patients before accepting the segmentation.
 
 ## 5. Build measurements
@@ -141,7 +141,7 @@ The script writes:
 - `measurements_cleaned_no_compartment.csv`
 - `measurements_cleaned_no_compartment_summary.csv`
 
-under `data/Calpaine_3_patients/results/`.
+under `data/HDD/Data/Calpaine_3_patients/results/`.
 
 The cleaned file removes very small objects, objects touching an image edge,
 and disconnected segmentations. All clinical CSV fields are retained.

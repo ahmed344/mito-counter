@@ -16,8 +16,8 @@ import tifffile as tiff
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-INPUT_ROOT = REPO_ROOT / "data" / "Calpaine_3_patients" / "Processed"
-RESULTS_ROOT = REPO_ROOT / "data" / "Calpaine_3_patients" / "results"
+INPUT_ROOT = REPO_ROOT / "data" / "HDD" / "Data" / "Calpaine_3_patients" / "Processed"
+RESULTS_ROOT = REPO_ROOT / "data" / "HDD" / "Data" / "Calpaine_3_patients" / "results"
 OUTPUT_CSV = RESULTS_ROOT / "measurements.csv"
 OUTPUT_CLEANED_CSV = RESULTS_ROOT / "measurements_cleaned.csv"
 OUTPUT_SS_SUMMARY_CSV = RESULTS_ROOT / "measurements_cleaned_ss_summary.csv"

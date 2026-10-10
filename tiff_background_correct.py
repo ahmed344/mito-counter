@@ -12,8 +12,8 @@ import yaml
 
 
 DEFAULT_INPUT_ROOTS = {
-    "calpaine_3": "/workspaces/mito-counter/data/Calpaine_3/Processed",
-    "dmd": "/workspaces/mito-counter/data/DMD/Processed",
+    "calpaine_3": "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/Processed",
+    "dmd": "/workspaces/mito-counter/data/HDD/Data/DMD/Processed",
 }
 DEFAULT_INPUT_ROOT = DEFAULT_INPUT_ROOTS["calpaine_3"]
 DEFAULT_CONFIG_PATH = os.path.join(
@@ -691,7 +691,7 @@ def parse_args() -> argparse.Namespace:
             "    python tiff_background_correct.py\n"
             "  Process one image:\n"
             "    python tiff_background_correct.py --input-file "
-            "/workspaces/mito-counter/data/DMD/Processed/DMD/EOM/EOM_DMD_1-1900X-0011.tif "
+            "/workspaces/mito-counter/data/HDD/Data/DMD/Processed/DMD/EOM/EOM_DMD_1-1900X-0011.tif "
             "--sigma 500\n"
             "  Disable Gaussian flat-field correction:\n"
             "    python tiff_background_correct.py --no-gaussian\n"

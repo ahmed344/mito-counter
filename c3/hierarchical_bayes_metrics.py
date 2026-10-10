@@ -35,9 +35,9 @@ from hierarchical_bayes_config import (
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-INPUT_CSV = REPO_ROOT / "data" / "Calpaine_3" / "results" / "measurments_cleaned.csv"
-OUTPUT_CSV = REPO_ROOT / "data" / "Calpaine_3" / "results" / "hierarchical_bayes_statistics.csv"
-TRACE_DIR = REPO_ROOT / "data" / "Calpaine_3" / "results" / "bayes_traces"
+INPUT_CSV = REPO_ROOT / "data" / "HDD" / "Data" / "Calpaine_3" / "results" / "measurments_cleaned.csv"
+OUTPUT_CSV = REPO_ROOT / "data" / "HDD" / "Data" / "Calpaine_3" / "results" / "hierarchical_bayes_statistics.csv"
+TRACE_DIR = REPO_ROOT / "data" / "HDD" / "Data" / "Calpaine_3" / "results" / "bayes_traces"
 DEFAULT_POSITIVE_LIKELIHOOD = "gamma"
 DEFAULT_BOUNDED_LIKELIHOOD = "auto"
 POSITIVE_LIKELIHOODS = ("gamma", "lognormal")

@@ -10,8 +10,8 @@ import numpy as np
 import tifffile as tiff
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT_ROOT = REPO_ROOT / "data" / "DMD_1X" / "Processed"
-DEFAULT_OUTPUT_ROOT = REPO_ROOT / "data" / "DMD_1X" / "results" / "overlay_qc"
+DEFAULT_INPUT_ROOT = REPO_ROOT / "data" / "HDD" / "Data" / "DMD_1X" / "Processed"
+DEFAULT_OUTPUT_ROOT = REPO_ROOT / "data" / "HDD" / "Data" / "DMD_1X" / "results" / "overlay_qc"
 MITO_ALPHA = 0.28
 EXCLUDED_SOURCE_SUFFIXES = (
     "_segmented",

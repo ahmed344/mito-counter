@@ -14,8 +14,8 @@ import numpy as np
 import tifffile as tif
 
 
-DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/DMD/Raw"
-DEFAULT_OUTPUT_ROOT = "/workspaces/mito-counter/data/DMD/Processed"
+DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/HDD/Data/DMD/Raw"
+DEFAULT_OUTPUT_ROOT = "/workspaces/mito-counter/data/HDD/Data/DMD/Processed"
 DEFAULT_MAGNIFICATION_TOKEN: str | None = None
 MUSCLE_TOKENS = ("TA", "EOM")
 CONDITION_TOKENS = ("WT", "DMD")

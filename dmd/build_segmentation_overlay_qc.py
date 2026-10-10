@@ -13,8 +13,8 @@ import numpy as np
 import tifffile as tiff
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT_ROOT = REPO_ROOT / "data" / "DMD" / "Processed"
-DEFAULT_OUTPUT_ROOT = REPO_ROOT / "data" / "DMD" / "results" / "overlay_qc"
+DEFAULT_INPUT_ROOT = REPO_ROOT / "data" / "HDD" / "Data" / "DMD" / "Processed"
+DEFAULT_OUTPUT_ROOT = REPO_ROOT / "data" / "HDD" / "Data" / "DMD" / "results" / "overlay_qc"
 SS_THRESHOLD_UM = 1.0
 REFERENCE_MAGNIFICATION = 6800.0
 REFERENCE_PIXEL_SIZE_UM = 0.0015396

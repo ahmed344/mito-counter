@@ -5,10 +5,10 @@ enabled: true # Set to false to skip all calculations and visualizations for thi
 analysis_id: "image_summary" # Options: `instance` for per-mitochondrion measurements, `image_summary` for one-row-per-image summaries.
 
 paths:
-  input_csv: "/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned_image_summary.csv" # Cleaned image-summary measurements CSV with one row per image.
-  summary_csv: "/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics_image_summary.csv" # Separate summary CSV for image-summary Bayesian results.
-  trace_dir: "/workspaces/mito-counter/data/Calpaine_3/results/bayes_traces_image_summary" # Separate NetCDF trace directory for image-summary fits.
-  figure_root: "/workspaces/mito-counter/data/Calpaine_3/results/figures/bayesian_image_summary" # Separate figure root for image-summary visualizations.
+  input_csv: "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/results/measurments_cleaned_image_summary.csv" # Cleaned image-summary measurements CSV with one row per image.
+  summary_csv: "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/results/hierarchical_bayes_statistics_image_summary.csv" # Separate summary CSV for image-summary Bayesian results.
+  trace_dir: "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/results/bayes_traces_image_summary" # Separate NetCDF trace directory for image-summary fits.
+  figure_root: "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/results/figures/bayesian_image_summary" # Separate figure root for image-summary visualizations.
 
 runtime:
   cores: 30

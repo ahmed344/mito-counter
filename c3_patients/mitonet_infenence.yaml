@@ -1,7 +1,7 @@
 # Paths for Calpain-3 patient MitoNet inference.
 paths:
   # Root containing the recursively discovered *_corrected.tif images.
-  input_dir: /workspaces/mito-counter/data/Calpaine_3_patients/Processed
+  input_dir: /workspaces/mito-counter/data/HDD/Data/Calpaine_3_patients/Processed
   # Set an absolute path or a path relative to input_dir for a one-image test.
   input_file: null
   model_pth: /workspaces/mito-counter/models/MitoNet_v1.pth

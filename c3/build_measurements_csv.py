@@ -13,11 +13,11 @@ from typing import Any
 import tifffile as tiff
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-INPUT_ROOT = REPO_ROOT / "data" / "Calpaine_3" / "Processed"
-OUTPUT_CSV = REPO_ROOT / "data" / "Calpaine_3" / "results" / "measurments.csv"
-OUTPUT_CLEANED_CSV = REPO_ROOT / "data" / "Calpaine_3" / "results" / "measurments_cleaned.csv"
+INPUT_ROOT = REPO_ROOT / "data" / "HDD" / "Data" / "Calpaine_3" / "Processed"
+OUTPUT_CSV = REPO_ROOT / "data" / "HDD" / "Data" / "Calpaine_3" / "results" / "measurments.csv"
+OUTPUT_CLEANED_CSV = REPO_ROOT / "data" / "HDD" / "Data" / "Calpaine_3" / "results" / "measurments_cleaned.csv"
 OUTPUT_IMAGE_SUMMARY_CSV = (
-    REPO_ROOT / "data" / "Calpaine_3" / "results" / "measurments_cleaned_image_summary.csv"
+    REPO_ROOT / "data" / "HDD" / "Data" / "Calpaine_3" / "results" / "measurments_cleaned_image_summary.csv"
 )
 REFERENCE_MAGNIFICATION = 6800.0
 REFERENCE_PIXEL_SIZE_UM = 0.0015396

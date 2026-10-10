@@ -5,10 +5,10 @@ enabled: true # Set to false to skip all calculations and visualizations for thi
 analysis_id: "instance" # Options: `instance` for per-mitochondrion measurements, `image_summary` for one-row-per-image summaries.
 
 paths:
-  input_csv: "/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv" # Cleaned per-mitochondrion measurements CSV consumed by both scripts.
-  summary_csv: "/workspaces/mito-counter/data/Calpaine_3/results/hierarchical_bayes_statistics.csv" # Summary CSV that is updated in place by muscle/metric key.
-  trace_dir: "/workspaces/mito-counter/data/Calpaine_3/results/bayes_traces" # Directory where per-fit NetCDF traces are written when `save_idata: true`.
-  figure_root: "/workspaces/mito-counter/data/Calpaine_3/results/figures/bayesian" # Root directory where visualization PNG files are written.
+  input_csv: "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/results/measurments_cleaned.csv" # Cleaned per-mitochondrion measurements CSV consumed by both scripts.
+  summary_csv: "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/results/hierarchical_bayes_statistics.csv" # Summary CSV that is updated in place by muscle/metric key.
+  trace_dir: "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/results/bayes_traces" # Directory where per-fit NetCDF traces are written when `save_idata: true`.
+  figure_root: "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/results/figures/bayesian" # Root directory where visualization PNG files are written.
 
 runtime:
   cores: 30 # Integer >= 1. Number of CPU cores handed to PyMC sampling.

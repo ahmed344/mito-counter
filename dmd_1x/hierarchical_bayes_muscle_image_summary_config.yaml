@@ -6,11 +6,11 @@ analysis_id: "image_summary"
 
 paths:
   input_csvs:
-    - "/workspaces/mito-counter/data/DMD_1X/results/measurements_cleaned_ss_summary.csv"
-    - "/workspaces/mito-counter/data/DMD_1X/results/measurements_cleaned_imf_summary.csv"
-  summary_csv: "/workspaces/mito-counter/data/DMD_1X/results/hierarchical_bayes_muscle_statistics_image_summary.csv"
-  trace_dir: "/workspaces/mito-counter/data/DMD_1X/results/bayes_muscle_traces_image_summary"
-  figure_root: "/workspaces/mito-counter/data/DMD_1X/results/figures/bayesian_muscle_image_summary"
+    - "/workspaces/mito-counter/data/HDD/Data/DMD_1X/results/measurements_cleaned_ss_summary.csv"
+    - "/workspaces/mito-counter/data/HDD/Data/DMD_1X/results/measurements_cleaned_imf_summary.csv"
+  summary_csv: "/workspaces/mito-counter/data/HDD/Data/DMD_1X/results/hierarchical_bayes_muscle_statistics_image_summary.csv"
+  trace_dir: "/workspaces/mito-counter/data/HDD/Data/DMD_1X/results/bayes_muscle_traces_image_summary"
+  figure_root: "/workspaces/mito-counter/data/HDD/Data/DMD_1X/results/figures/bayesian_muscle_image_summary"
 
 runtime:
   cores: 20

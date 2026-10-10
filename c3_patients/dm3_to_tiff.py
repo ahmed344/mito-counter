@@ -18,8 +18,8 @@ import numpy as np
 import tifffile as tif
 
 
-DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/Calpaine_3_patients/RAW"
-DEFAULT_OUTPUT_ROOT = "/workspaces/mito-counter/data/Calpaine_3_patients/Processed"
+DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/HDD/Data/Calpaine_3_patients/RAW"
+DEFAULT_OUTPUT_ROOT = "/workspaces/mito-counter/data/HDD/Data/Calpaine_3_patients/Processed"
 DEFAULT_MAGNIFICATION = "4800X"
 CONDITIONS = ("CAPN3", "CTRL")
 QUANTIFICATION_DIRECTORIES = {

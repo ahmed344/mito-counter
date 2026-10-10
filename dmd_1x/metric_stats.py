@@ -33,12 +33,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from dmd_1x import stats_utils as dmd_stats_utils
 
-INPUT_CSV = REPO_ROOT / "data" / "DMD_1X" / "results" / "measurements_cleaned.csv"
+INPUT_CSV = REPO_ROOT / "data" / "HDD" / "Data" / "DMD_1X" / "results" / "measurements_cleaned.csv"
 IMAGE_SUMMARY_INPUT_CSVS = [
-    REPO_ROOT / "data" / "DMD_1X" / "results" / "measurements_cleaned_ss_summary.csv",
-    REPO_ROOT / "data" / "DMD_1X" / "results" / "measurements_cleaned_imf_summary.csv",
+    REPO_ROOT / "data" / "HDD" / "Data" / "DMD_1X" / "results" / "measurements_cleaned_ss_summary.csv",
+    REPO_ROOT / "data" / "HDD" / "Data" / "DMD_1X" / "results" / "measurements_cleaned_imf_summary.csv",
 ]
-RESULTS_DIR = REPO_ROOT / "data" / "DMD_1X" / "results"
+RESULTS_DIR = REPO_ROOT / "data" / "HDD" / "Data" / "DMD_1X" / "results"
 INSTANCE_FIGURES_DIR = RESULTS_DIR / "figures_instance"
 IMAGE_SUMMARY_FIGURES_DIR = RESULTS_DIR / "figures_image_summary"
 STATISTICS_CSV = RESULTS_DIR / "statistics_image_summary.csv"

@@ -6,11 +6,11 @@ analysis_id: "image_summary"
 
 paths:
   input_csvs:
-    - "/workspaces/mito-counter/data/Calpaine_3_patients/results/measurements_cleaned_ss_summary.csv"
-    - "/workspaces/mito-counter/data/Calpaine_3_patients/results/measurements_cleaned_imf_summary.csv"
-  summary_csv: "/workspaces/mito-counter/data/Calpaine_3_patients/results/hierarchical_bayes_statistics_image_summary.csv"
-  trace_dir: "/workspaces/mito-counter/data/Calpaine_3_patients/results/bayes_traces_image_summary"
-  figure_root: "/workspaces/mito-counter/data/Calpaine_3_patients/results/figures/bayesian_image_summary"
+    - "/workspaces/mito-counter/data/HDD/Data/Calpaine_3_patients/results/measurements_cleaned_ss_summary.csv"
+    - "/workspaces/mito-counter/data/HDD/Data/Calpaine_3_patients/results/measurements_cleaned_imf_summary.csv"
+  summary_csv: "/workspaces/mito-counter/data/HDD/Data/Calpaine_3_patients/results/hierarchical_bayes_statistics_image_summary.csv"
+  trace_dir: "/workspaces/mito-counter/data/HDD/Data/Calpaine_3_patients/results/bayes_traces_image_summary"
+  figure_root: "/workspaces/mito-counter/data/HDD/Data/Calpaine_3_patients/results/figures/bayesian_image_summary"
 
 runtime:
   # Four chain processes per fit x seven simultaneous fits = 28 CPU cores.

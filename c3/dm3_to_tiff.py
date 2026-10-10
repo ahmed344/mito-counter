@@ -13,8 +13,8 @@ import numpy as np
 import tifffile as tif
 
 
-DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/Calpaine_3/Raw"
-DEFAULT_OUTPUT_ROOT = "/workspaces/mito-counter/data/Calpaine_3/Processed"
+DEFAULT_INPUT_ROOT = "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/Raw"
+DEFAULT_OUTPUT_ROOT = "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/Processed"
 DEFAULT_MAGNIFICATION_TOKEN = "6800X"
 MUSCLE_TOKENS = ("SOL", "TA", "EOM")
 BLOCK_DIRECTORY_RE = re.compile(r"^\s*(SOL|TA)\s*[-_ ]\s*([0-9]+)\s*$", re.IGNORECASE)

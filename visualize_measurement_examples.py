@@ -13,11 +13,11 @@ import pandas as pd
 import tifffile as tiff
 
 MEASUREMENTS_CSV = Path(
-    "/workspaces/mito-counter/data/Calpaine_3/results/measurments_cleaned.csv"
+    "/workspaces/mito-counter/data/HDD/Data/Calpaine_3/results/measurments_cleaned.csv"
 )
-STATISTICS_CSV = Path("/workspaces/mito-counter/data/Calpaine_3/results/statistics.csv")
-PROCESSED_ROOT = Path("/workspaces/mito-counter/data/Calpaine_3/Processed")
-OUTPUT_DIR = Path("/workspaces/mito-counter/data/Calpaine_3/results/figures/examples")
+STATISTICS_CSV = Path("/workspaces/mito-counter/data/HDD/Data/Calpaine_3/results/statistics.csv")
+PROCESSED_ROOT = Path("/workspaces/mito-counter/data/HDD/Data/Calpaine_3/Processed")
+OUTPUT_DIR = Path("/workspaces/mito-counter/data/HDD/Data/Calpaine_3/results/figures/examples")
 
 SAMPLE_PER_TAIL = 20
 GRID_COLS_PER_TAIL = 4
